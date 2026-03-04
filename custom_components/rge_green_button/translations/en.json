@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "RG&E Green Button",
+        "description": "Click Submit to set up the RG&E Green Button integration.\n\nAfter setup, an **RG&E Import** panel will appear in your sidebar where you can drag and drop your downloaded CSV or XML files to import your usage data."
+      }
+    },
+    "abort": {
+      "already_configured": "RG&E Green Button is already configured."
+    }
+  }
+}
