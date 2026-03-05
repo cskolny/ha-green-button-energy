@@ -5,8 +5,8 @@
 
 Import your **Rochester Gas & Electric (RG&E)** smart meter usage data directly into the [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/) via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and **gas** (CCF/therms) usage from RG&E's Green Button CSV and XML exports.
 
-> 📸 **Tip:** After publishing, add a screenshot of your Energy Dashboard and the import panel to a `screenshots/` folder in the repo and link them here.
-
+![Import Panel](screenshots/import-panel.png)
+![Energy Dashboard](screenshots/energy-dashboard.png)
 ---
 
 ## Features
