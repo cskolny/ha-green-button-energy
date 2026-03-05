@@ -88,7 +88,7 @@ def _parse_stored_time(value: str) -> Optional[datetime]:
     return None
 
 
-def _parse_rge_timestamp(value: str) -> Optional[datetime]:
+def _parse_csv_timestamp(value: str) -> Optional[datetime]:
     """
     Parse an RG&E CSV timestamp which may be timezone-aware.
     e.g. "2026-03-01 00:00:00-05:00"
@@ -213,7 +213,7 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
-        row_dt = _parse_rge_timestamp(raw_time)
+        row_dt = _parse_csv_timestamp(raw_time)
         if row_dt is None:
             _LOGGER.debug("[%s] Unparseable timestamp: '%s'", path.name, raw_time)
             result.rows_skipped += 1

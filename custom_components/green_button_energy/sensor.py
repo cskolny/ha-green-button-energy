@@ -1,5 +1,5 @@
 """
-Sensor platform for the RG&E Green Button integration.
+Sensor platform for the Green Button Energy Import integration.
 
 After parsing a file, hourly readings are written directly into HA's
 long-term statistics database using recorder.async_import_statistics.
@@ -22,7 +22,6 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
@@ -54,11 +53,11 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up RG&E Green Button sensors from a config entry."""
+    """Set up Green Button Energy sensors from a config entry."""
 
     store, data = await load_store(hass)
 
-    electric_sensor = RGESensor(
+    electric_sensor = GreenButtonSensor(
         hass=hass,
         store=store,
         data=data,
@@ -71,7 +70,7 @@ async def async_setup_entry(
         unique_id=SENSOR_ELECTRIC_UID,
     )
 
-    gas_sensor = RGESensor(
+    gas_sensor = GreenButtonSensor(
         hass=hass,
         store=store,
         data=data,
@@ -92,7 +91,7 @@ async def async_setup_entry(
     }
 
 
-class RGESensor(SensorEntity):
+class GreenButtonSensor(SensorEntity):
     """
     Cumulative energy/gas sensor that writes historical statistics directly
     into HA's recorder database for Energy Dashboard backfill support.
@@ -138,7 +137,7 @@ class RGESensor(SensorEntity):
         Parse a file and write hourly statistics into HA's recorder database.
 
         Uses async_import_statistics so every hourly reading gets its correct
-        past timestamp in the Energy Dashboard — not just a single value at now.
+        past timestamp in the Energy Dashboard.
         """
         async with self._processing_lock:
             last_time: str = self._data.get(self._time_key, "")
@@ -167,10 +166,8 @@ class RGESensor(SensorEntity):
                 )
                 return
 
-            # Write hourly statistics into the recorder database
             await self._import_statistics(result)
 
-            # Update persistent tracking data
             self._data[self._total_key] = round(
                 float(self._data.get(self._total_key, 0.0)) + result.new_usage, 6
             )
@@ -178,7 +175,6 @@ class RGESensor(SensorEntity):
             self._data[LAST_FILE_KEY] = Path(file_path).name
             await self._store.async_save(self._data)
 
-            # Update sensor state
             self._attr_native_value = self._data[self._total_key]
             self.async_write_ha_state()
 
@@ -199,13 +195,11 @@ class RGESensor(SensorEntity):
         Write hourly readings as long-term statistics into the recorder.
 
         Finds the correct cumulative sum baseline by looking up the last
-        recorded stat strictly BEFORE our earliest new row. This handles
-        three cases correctly:
+        recorded stat strictly BEFORE our earliest new row. Handles three
+        cases:
           1. Clean append   — new data starts after all existing stats
-          2. Overlap/re-import — new data overlaps existing stats;
-                                 find pre-overlap sum as baseline so
-                                 async_import_statistics overwrites the
-                                 overlapping rows with correct sums
+          2. Overlap        — find pre-overlap sum so existing rows are
+                             overwritten with correct cumulative sums
           3. First import   — no existing stats; baseline = 0
         """
         if not result.hourly_readings:
@@ -217,12 +211,11 @@ class RGESensor(SensorEntity):
             statistics_during_period,
         )
         from homeassistant.components.recorder.models import StatisticMeanType
-        from homeassistant.util.dt import utc_from_timestamp
 
         sorted_readings = sorted(result.hourly_readings)
         earliest_dt = sorted_readings[0][0]
 
-        # Step 1: get the overall last stat to detect overlap
+        # Get the overall last stat to detect overlap
         last_stats = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics,
             self.hass,
@@ -246,9 +239,7 @@ class RGESensor(SensorEntity):
                     self._attr_name, running_sum, last_start,
                 )
             else:
-                # Overlap detected — find the last stat strictly before
-                # earliest_dt to use as the pre-overlap baseline sum.
-                # We query a 2-hour window ending at earliest_dt.
+                # Overlap — find sum from the hour before our earliest row
                 window_start = earliest_dt - timedelta(hours=2)
                 window_end = earliest_dt
 
@@ -264,9 +255,7 @@ class RGESensor(SensorEntity):
                 )
 
                 if pre_stats and self.entity_id in pre_stats:
-                    # Get the last entry in the window (closest to earliest_dt)
                     pre_list = pre_stats[self.entity_id]
-                    # Filter to only rows strictly before earliest_dt
                     before = [
                         r for r in pre_list
                         if datetime.fromtimestamp(float(r["start"]), tz=timezone.utc) < earliest_dt
@@ -279,16 +268,10 @@ class RGESensor(SensorEntity):
                         )
                     else:
                         running_sum = 0.0
-                        _LOGGER.debug(
-                            "[%s] Overlap — no pre-overlap stat found, using 0",
-                            self._attr_name,
-                        )
+                        _LOGGER.debug("[%s] Overlap — no pre-overlap stat, using 0", self._attr_name)
                 else:
                     running_sum = 0.0
-                    _LOGGER.debug(
-                        "[%s] Overlap — no pre-overlap stats in window, using 0",
-                        self._attr_name,
-                    )
+                    _LOGGER.debug("[%s] Overlap — no stats in window, using 0", self._attr_name)
 
         # Build statistic rows with correct cumulative sums
         statistic_data: list[StatisticData] = []
@@ -300,10 +283,9 @@ class RGESensor(SensorEntity):
                 "sum": running_sum,
             })
 
-        # StatisticMetaData — use mean_type and unit_class for HA 2026.11+
-        # unit_class values derived from STATISTIC_UNIT_TO_UNIT_CONVERTER:
-        #   kWh -> 'energy',  CCF -> 'volume'
+        # unit_class values: kWh → 'energy', CCF → 'volume'
         unit_class = "energy" if self._attr_native_unit_of_measurement == "kWh" else "volume"
+
         metadata: StatisticMetaData = {
             "has_mean": False,
             "mean_type": StatisticMeanType.NONE,
@@ -325,7 +307,6 @@ class RGESensor(SensorEntity):
 
         async_import_statistics(self.hass, metadata, statistic_data)
 
-
     def _send_success_notification(self, file_path: str, result: ParseResult) -> None:
         """Show a persistent notification on successful import."""
         pn_create(
@@ -338,7 +319,7 @@ class RGESensor(SensorEntity):
                 f"🔢 Running total: {self._attr_native_value:.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🕐 Data through: {result.newest_time}"
             ),
-            title="RG&E Green Button — Import Successful",
+            title="Avangrid Green Button — Import Successful",
             notification_id=f"{NOTIF_SUCCESS}_{self._attr_unique_id}",
         )
 
@@ -353,6 +334,6 @@ class RGESensor(SensorEntity):
                 f"❌ Import failed.\n\n"
                 f"**Errors:**\n{errors_fmt}"
             ),
-            title="RG&E Green Button — Import Failed",
+            title="Avangrid Green Button — Import Failed",
             notification_id=f"{NOTIF_ERROR}_{self._attr_unique_id}",
         )

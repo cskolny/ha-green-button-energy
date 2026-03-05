@@ -1,6 +1,6 @@
-"""Constants for the RG&E Green Button integration."""
+"""Constants for the Green Button Energy Import integration."""
 
-DOMAIN = "rge_green_button"
+DOMAIN = "green_button_energy"
 
 # Storage
 STORAGE_KEY = f"{DOMAIN}_data"
@@ -14,8 +14,8 @@ GAS_TIME_KEY        = "last_gas_time"
 LAST_FILE_KEY       = "last_processed_file"
 
 # Sensor names and unique IDs
-SENSOR_ELECTRIC_NAME = "RG&E Electric Total"
-SENSOR_GAS_NAME      = "RG&E Gas Total"
+SENSOR_ELECTRIC_NAME = "Avangrid Electric Total"
+SENSOR_GAS_NAME      = "Avangrid Gas Total"
 SENSOR_ELECTRIC_UID  = f"{DOMAIN}_electric_total"
 SENSOR_GAS_UID       = f"{DOMAIN}_gas_total"
 
@@ -23,13 +23,13 @@ SENSOR_GAS_UID       = f"{DOMAIN}_gas_total"
 UNIT_ELECTRIC = "kWh"
 UNIT_GAS      = "CCF"   # Therms ≈ CCF; HA gas device class requires a volume unit
 
-# Supported file extensions accepted by the drag-and-drop panel
+# Supported file extensions
 SUPPORTED_EXTENSIONS = {".csv", ".xml"}
 
 # Notification IDs
 NOTIF_SUCCESS = f"{DOMAIN}_import_success"
 NOTIF_ERROR   = f"{DOMAIN}_import_error"
 
-# Config entry keys (kept for any future config flow fields)
+# Config entry keys
 CONF_ELECTRIC_KEYWORD = "electric_keyword"
 CONF_GAS_KEYWORD      = "gas_keyword"

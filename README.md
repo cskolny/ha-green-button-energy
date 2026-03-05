@@ -1,11 +1,27 @@
-# RG&E Green Button — Home Assistant Custom Integration
+# Green Button Energy Import — Home Assistant Custom Integration
 
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.2%2B-blue?logo=homeassistant)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Import your **Rochester Gas & Electric (RG&E)** smart meter usage data directly into the [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/) via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and **gas** (CCF/therms) usage from RG&E's Green Button CSV and XML exports.
+Import your **Avangrid utility** smart meter usage data directly into the [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/) via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and **gas** (CCF/therms) usage from Green Button CSV and XML exports.
 
 ![Energy Dashboard](screenshots/energy-dashboard.png)
+
+---
+
+## Supported Utilities
+
+This integration works with any Avangrid utility that provides Green Button data exports:
+
+| Utility | State | Service |
+|---------|-------|---------|
+| Rochester Gas & Electric (RG&E) | New York | Electric & Gas |
+| New York State Electric & Gas (NYSEG) | New York | Electric & Gas |
+| Central Maine Power (CMP) | Maine | Electric |
+| United Illuminating (UI) | Connecticut | Electric |
+| Connecticut Natural Gas (CNG) | Connecticut | Gas |
+| Southern Connecticut Gas (SCG) | Connecticut | Gas |
+| Berkshire Gas | Massachusetts | Gas |
 
 ---
 
@@ -14,10 +30,10 @@ Import your **Rochester Gas & Electric (RG&E)** smart meter usage data directly 
 - ⚡ **Drag-and-drop import** — dedicated sidebar panel, no command line needed
 - 📊 **Full historical backfill** — imports all hourly data with correct past timestamps into the Energy Dashboard
 - 🔁 **Safe re-imports** — duplicate rows are automatically skipped; overlapping files can be re-dropped safely
-- 📁 **CSV and XML support** — works with both RG&E Opower CSV exports and standard Green Button ESPI XML exports
+- 📁 **CSV and XML support** — works with both Avangrid Opower CSV exports and standard Green Button ESPI XML exports
 - 🔔 **Import notifications** — persistent HA notifications confirm row counts and usage totals on success or failure
 - 🔌 **No YAML configuration** — fully UI-driven setup except for one `panel_custom` entry (see below)
-- 🏠 **Energy Dashboard ready** — sensors use the correct `device_class`, `state_class`, and units to appear in HA's Energy Dashboard
+- 🏠 **Energy Dashboard ready** — sensors use the correct `device_class`, `state_class`, and units for HA's Energy Dashboard
 
 ---
 
@@ -25,8 +41,8 @@ Import your **Rochester Gas & Electric (RG&E)** smart meter usage data directly 
 
 | Sensor | Entity ID | Unit | Device Class | State Class |
 |--------|-----------|------|-------------|-------------|
-| RG&E Electric Total | `sensor.rg_e_electric_total` | kWh | `energy` | `total_increasing` |
-| RG&E Gas Total | `sensor.rg_e_gas_total` | CCF | `gas` | `total_increasing` |
+| Avangrid Electric Total | `sensor.avangrid_electric_total` | kWh | `energy` | `total_increasing` |
+| Avangrid Gas Total | `sensor.avangrid_gas_total` | CCF | `gas` | `total_increasing` |
 
 Both sensors are automatically available in **Settings → Energy** for the Electricity grid and Gas consumption sections.
 
@@ -34,8 +50,8 @@ Both sensors are automatically available in **Settings → Energy** for the Elec
 
 ## Requirements
 
-- Home Assistant **2025.1 or later** (tested on 2026.2)
-- RG&E account with smart meter data available at [myrge.com](https://www.myrge.com)
+- Home Assistant **2025.1 or later** (tested on 2026.3)
+- An Avangrid utility account with smart meter data and Green Button export access
 - SSH or file access to your HA config directory (for initial install only)
 
 ---
@@ -45,15 +61,15 @@ Both sensors are automatically available in **Settings → Energy** for the Elec
 ### Manual
 
 1. Download or clone this repository
-2. Copy the `rge_green_button` folder into your HA config directory:
+2. Copy the `green_button_energy` folder into your HA config directory:
    ```
-   config/custom_components/rge_green_button/
+   config/custom_components/green_button_energy/
    ```
 3. Verify the file structure looks like this:
    ```
-   custom_components/rge_green_button/
+   custom_components/green_button_energy/
    ├── frontend/
-   │   └── rge-green-button-panel.js
+   │   └── green-button-energy-panel.js
    ├── images/
    │   ├── icon.png
    │   └── logo.png
@@ -74,8 +90,8 @@ Both sensors are automatically available in **Settings → Energy** for the Elec
 This integration is not yet in the HACS default store. You can add it as a custom repository:
 
 1. In HACS → Integrations → three-dot menu → **Custom repositories**
-2. Add your GitHub repo URL with category **Integration**
-3. Search for "RG&E Green Button" and install
+2. Add `https://github.com/cskolny/ha-green-button-energy` with category **Integration**
+3. Search for "Green Button Energy Import" and install
 
 ---
 
@@ -87,14 +103,14 @@ Add the following to your `configuration.yaml` (one-time only):
 
 ```yaml
 panel_custom:
-  - name: rge-green-button-panel
-    sidebar_title: RG&E Import
+  - name: green-button-energy-panel
+    sidebar_title: Green Button Import
     sidebar_icon: mdi:lightning-bolt-circle
-    url_path: rge-green-button
-    module_url: /local/rge_green_button/rge-green-button-panel.js
+    url_path: green-button-energy
+    module_url: /local/green_button_energy/green-button-energy-panel.js
 ```
 
-> **Why is YAML needed?** Home Assistant removed the programmatic Python API for registering sidebar panels in recent versions. The `panel_custom` entry is the only supported method, and it only needs to be added once.
+> **Why is YAML needed?** Home Assistant removed the programmatic Python API for registering sidebar panels in recent versions. The `panel_custom` entry is the only supported method and only needs to be added once.
 
 ### Step 2 — Restart Home Assistant
 
@@ -103,39 +119,45 @@ docker compose restart homeassistant
 # or via UI: Settings → System → Restart
 ```
 
-On first start the integration automatically copies the panel JavaScript file to `config/www/rge_green_button/` so it can be served by HA's built-in web server.
+On first start the integration automatically copies the panel JavaScript file to `config/www/green_button_energy/` so it can be served by HA's built-in web server.
 
 ### Step 3 — Add the Integration
 
 1. Go to **Settings → Devices & Services**
 2. Click **+ Add Integration**
-3. Search for **RG&E Green Button**
+3. Search for **Green Button Energy Import**
 4. Click **Submit** — no additional configuration required
 
 ### Step 4 — Add Sensors to the Energy Dashboard
 
 1. Go to **Settings → Energy**
-2. Under **Electricity grid → Grid consumption** → **Add consumption** → select `RG&E Electric Total`
-3. Under **Gas consumption** → **Add gas source** → select `RG&E Gas Total`
+2. Under **Electricity → Grid consumption** → **Add consumption** → select `Avangrid Electric Total`
+3. Under **Gas consumption** → **Add gas source** → select `Avangrid Gas Total`
 4. Click **Save**
 
 ---
 
 ## Usage
 
-### Downloading Your Data from RG&E
+### Downloading Your Data
 
-1. Log in at [myrge.com](https://www.myrge.com)
-2. Navigate to **My Energy Use** or **My Account → Energy Usage**
-3. Select your desired date range (up to ~12 months per download)
-4. Download as **CSV** or **Green Button XML**
-5. Download a separate file for electric and gas if needed
+Log in to your Avangrid utility website and navigate to your energy usage or account section. Look for a **Green Button** or **Download My Data** option and select your desired date range. Download as **CSV** or **Green Button XML**. Download a separate file for electric and gas if needed.
+
+| Utility | Website |
+|---------|---------|
+| RG&E | [myrge.com](https://www.myrge.com) |
+| NYSEG | [myny.com](https://www.myny.com) |
+| Central Maine Power | [cmpco.com](https://www.cmpco.com) |
+| United Illuminating | [uinet.com](https://www.uinet.com) |
+| Connecticut Natural Gas | [cngcorp.com](https://www.cngcorp.com) |
+| Southern Connecticut Gas | [soconngas.com](https://www.soconngas.com) |
+| Berkshire Gas | [berkshiregas.com](https://www.berkshiregas.com) |
 
 > **Tip:** For initial historical backfill, download in 12-month chunks working backwards from today. Overlapping date ranges between files are handled safely.
 
 ### Importing Files
 
-1. Open **RG&E Import** in the Home Assistant sidebar
+1. Open **Green Button Import** in the Home Assistant sidebar
 2. Drag your electric CSV or XML onto the ⚡ **Electric Usage** zone
 3. Wait for the success notification confirming the row count and usage total
 4. Drag your gas CSV or XML onto the 🔥 **Gas Usage** zone
@@ -143,14 +165,14 @@ On first start the integration automatically copies the panel JavaScript file to
 
 ### Weekly Workflow
 
-RG&E updates smart meter data with a ~48 hour delay. A typical weekly routine:
+Avangrid utilities update smart meter data with a ~48 hour delay. A typical weekly routine:
 
-1. Download the past week's CSV or XML from myrge.com
-2. Drop electric file into the ⚡ zone
-3. Drop gas file into the 🔥 zone
+1. Download the past week's CSV or XML from your utility website
+2. Drop the electric file into the ⚡ zone
+3. Drop the gas file into the 🔥 zone
 4. Done — new data appears in the Energy Dashboard
 
-Duplicate rows from overlapping date ranges are automatically skipped, so you can always download a slightly wider range than needed without worrying about double-counting.
+Duplicate rows from overlapping date ranges are automatically skipped, so you can always download a slightly wider range without worrying about double-counting.
 
 ---
 
@@ -158,7 +180,7 @@ Duplicate rows from overlapping date ranges are automatically skipped, so you ca
 
 ### CSV (Opower Export)
 
-RG&E's standard spreadsheet export. Contains both electric and gas data in a single file, with a `Type` column used to distinguish them.
+Standard spreadsheet export containing hourly interval data. Uses a `Type` column to distinguish electric from gas rows, so a single combined file is handled correctly.
 
 | Column | Description |
 |--------|-------------|
@@ -166,21 +188,16 @@ RG&E's standard spreadsheet export. Contains both electric and gas data in a sin
 | `Usage` | Energy or gas usage for the interval |
 | `Type` | `electric` or `gas` |
 
-Example row:
-```
-2026-01-15 00:00:00-05:00,0.938,electric
-```
-
 ### XML (Green Button ESPI)
 
-The industry-standard Green Button format. RG&E provides separate XML files for electric and gas.
+The industry-standard Green Button format. Separate XML files are typically provided for electric and gas.
 
 | Service | ServiceCategory kind | uom | Conversion |
 |---------|---------------------|-----|-----------|
 | Electric | `0` | `72` (Wh) | `value × 10⁻³ ÷ 1000 = kWh` |
 | Gas | `1` | `169` (therms) | `value × 10⁻³ = therms` |
 
-The parser auto-detects the service type and applies the correct unit conversion from the `ReadingType` metadata in the file.
+The parser auto-detects the service type and unit conversion from the `ReadingType` metadata in the file.
 
 ---
 
@@ -191,14 +208,14 @@ The parser auto-detects the service type and applies the correct unit conversion
 ```
 Browser (HA Frontend)          HA Backend (Python)
 ─────────────────────          ───────────────────
-RG&E Import Panel              WebSocket Handler
+Green Button Import Panel      WebSocket Handler
   │                              │
   │  FileReader.readAsText()     │
   │  → file content (UTF-8)      │
   │                              │
   └──── WebSocket message ──────►│
-         type: rge_green_button  │
-         /import_file            │
+         type: green_button      │
+         _energy/import_file     │
                                  │
                           Write temp file
                                  │
@@ -221,11 +238,7 @@ Simply updating a sensor's state only records a single data point at the current
 
 ### Duplicate Prevention
 
-Each successful import stores the timestamp of the most recently imported reading in HA's `.storage` directory (`rge_green_button_data`). On subsequent imports, any row with a timestamp at or before this value is skipped. This means:
-
-- Re-importing the same file is always safe
-- Files with overlapping date ranges can be dropped in any order
-- Gaps in downloaded data are automatically filled when you drop a file that covers them
+Each successful import stores the timestamp of the most recently imported reading in HA's `.storage` directory (`green_button_energy_data`). On subsequent imports, any row with a timestamp at or before this value is skipped.
 
 ---
 
@@ -233,19 +246,19 @@ Each successful import stores the timestamp of the most recently imported readin
 
 If you need to wipe all data and start over:
 
-1. **Delete long-term statistics** — Developer Tools → Statistics → find both RG&E sensors → delete all statistics
+1. **Delete long-term statistics** — Developer Tools → Statistics → find both Avangrid sensors → delete all statistics
 2. **Purge entity history** — Developer Tools → Actions:
    ```yaml
    action: recorder.purge_entities
    data:
      entity_id:
-       - sensor.rg_e_electric_total
-       - sensor.rg_e_gas_total
+       - sensor.avangrid_electric_total
+       - sensor.avangrid_gas_total
      keep_days: 0
    ```
 3. **Delete integration storage:**
    ```bash
-   rm /config/.storage/rge_green_button_data
+   rm /config/.storage/green_button_energy_data
    ```
 4. **Restart HA**
 5. **Re-import your files** — oldest date range first, then newer
@@ -255,51 +268,37 @@ If you need to wipe all data and start over:
 ## Troubleshooting
 
 ### "No new data found" notification
-
-The integration's stored `last_time` is already at or past the end of your file. Either:
-- Your file covers dates you've already imported — this is normal and safe
-- You need to download a more recent date range from myrge.com
-- If unexpected, delete `.storage/rge_green_button_data` and restart to reset
+The integration's stored `last_time` is already at or past the end of your file. Download a more recent date range from your utility website, or delete `.storage/green_button_energy_data` and restart to reset.
 
 ### Sensor doesn't appear in Energy Dashboard gas section
-
-HA requires a non-zero sensor value and correct `device_class: gas` with a volume unit. Verify in **Developer Tools → States** that `sensor.rg_e_gas_total` shows `device_class: gas` and `unit_of_measurement: CCF`. If the unit shows `therms` (from an older version), go to **Developer Tools → Statistics** and update the unit to `CCF`.
+Verify in **Developer Tools → States** that `sensor.avangrid_gas_total` shows `device_class: gas` and `unit_of_measurement: CCF`.
 
 ### Energy Dashboard shows negative values or gaps
-
-This happens when statistics from a previous partial import have an inconsistent cumulative sum. Fix by following the full reset procedure above, then reimport all files oldest-to-newest.
+Follow the full reset procedure above, then reimport all files oldest-to-newest.
 
 ### "Connection error" when dropping a file
+Check **Settings → System → Logs** and filter for `green_button_energy`. Common causes: integration not fully loaded, file is not valid UTF-8, or HA WebSocket connection dropped — refresh the browser and try again.
 
-Check **Settings → System → Logs** and filter for `rge_green_button`. Common causes:
-- Integration not fully loaded — check for setup errors in the log
-- File is not valid UTF-8 — try re-downloading from myrge.com
-- HA WebSocket connection dropped — refresh the browser and try again
-
-### Integration not found in Settings → Add Integration search
-
-The `custom_components/rge_green_button/` folder name must use **underscores** (not hyphens) and match exactly. Verify:
+### Integration not found in Settings → Add Integration
+The `custom_components/green_button_energy/` folder name must use **underscores** and match exactly. Verify:
 ```bash
 ls /config/custom_components/
-# Should show: rge_green_button
+# Should show: green_button_energy
 ```
 
 ### Panel JS 404 in browser console
-
-The JS file wasn't copied to `config/www/`. Check that `config/www/rge_green_button/rge-green-button-panel.js` exists after restart. If not, verify the `frontend/` subfolder exists inside your custom component directory.
+Verify `config/www/green_button_energy/green-button-energy-panel.js` exists after restart. If not, check that the `frontend/` subfolder exists inside your custom component directory.
 
 ---
 
 ## Contributing
 
-Pull requests are welcome! If you find a bug or have an improvement:
+Pull requests are welcome! If you use an Avangrid utility not listed above and want to add support, please open an issue with a sample file (with personal data removed).
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-improvement`)
 3. Commit your changes
 4. Open a pull request
-
-If you use a different utility that also provides Green Button CSV or XML exports (National Grid, ConEd, etc.) and want to add support, please open an issue with a sample file (with personal data removed) and we can extend the parser.
 
 ---
 
@@ -311,4 +310,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgements
 
-Built for the Home Assistant community. RG&E and Green Button are trademarks of their respective owners. This project is not affiliated with or endorsed by Avangrid, RG&E, or the Green Button Alliance.
+Built for the Home Assistant community. Avangrid, RG&E, NYSEG, Central Maine Power, United Illuminating, Connecticut Natural Gas, Southern Connecticut Gas, and Berkshire Gas are trademarks of their respective owners. This project is not affiliated with or endorsed by Avangrid or any of its subsidiaries.

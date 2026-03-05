@@ -1,17 +1,23 @@
 """
-RG&E Green Button Custom Integration.
+Green Button Energy Import — Home Assistant Custom Integration.
 
-Panel registration requires one entry in configuration.yaml (see below).
-All import logic is handled via WebSocket — no other YAML needed.
+Imports hourly smart meter usage data from Avangrid utility Green Button
+CSV/XML exports into the Home Assistant Energy Dashboard via a drag-and-drop
+sidebar panel.
 
-Add this to configuration.yaml once, then restart HA:
+Supported utilities: RG&E, NYSEG, Central Maine Power, United Illuminating,
+Connecticut Natural Gas, Southern Connecticut Gas, Berkshire Gas.
+
+Setup (one-time, after installing the integration)
+-----
+Add the following to your configuration.yaml, then restart HA:
 
   panel_custom:
-    - name: rge-green-button-panel
-      sidebar_title: RG&E Import
+    - name: green-button-energy-panel
+      sidebar_title: Green Button Import
       sidebar_icon: mdi:lightning-bolt-circle
-      url_path: rge-green-button
-      module_url: /local/rge_green_button/rge-green-button-panel.js
+      url_path: green-button-energy
+      module_url: /local/green_button_energy/green-button-energy-panel.js
 """
 
 from __future__ import annotations
@@ -34,26 +40,21 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 
 _FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
-_PANEL_JS     = "rge-green-button-panel.js"
+_PANEL_JS     = "green-button-energy-panel.js"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Copy the panel JS to www and register the WebSocket command."""
     hass.data.setdefault(DOMAIN, {})
-
-    # Copy JS to config/www/rge_green_button/ so it is served at /local/
     await hass.async_add_executor_job(_ensure_frontend_file, hass)
-
-    # Register WebSocket command
     websocket_api.async_register_command(hass, ws_handle_import_file)
-
     _LOGGER.info("[%s] Setup complete — WebSocket command registered.", DOMAIN)
     return True
 
 
 def _ensure_frontend_file(hass: HomeAssistant) -> None:
-    """Copy the panel JS into config/www/rge_green_button/ (runs in executor)."""
-    www_dir = pathlib.Path(hass.config.config_dir) / "www" / "rge_green_button"
+    """Copy the panel JS into config/www/green_button_energy/ (runs in executor)."""
+    www_dir = pathlib.Path(hass.config.config_dir) / "www" / "green_button_energy"
     www_dir.mkdir(parents=True, exist_ok=True)
     src  = _FRONTEND_DIR / _PANEL_JS
     dest = www_dir / _PANEL_JS
@@ -85,7 +86,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "rge_green_button/import_file",
+        vol.Required("type"): "green_button_energy/import_file",
         vol.Required("filename"): str,
         vol.Required("content"): str,
         vol.Required("service_type"): vol.In(["electric", "gas"]),
@@ -122,7 +123,7 @@ async def ws_handle_import_file(
         connection.send_error(
             msg_id,
             "sensor_not_found",
-            f"No RG&E sensor found for service_type='{service_type}'. "
+            f"No Green Button sensor found for service_type='{service_type}'. "
             "Is the integration configured under Settings → Devices & Services?",
         )
         return
@@ -170,7 +171,7 @@ async def ws_handle_import_file(
 
 
 def _find_sensor(hass: HomeAssistant, service_type: str):
-    """Find the RGESensor instance for the given service_type."""
+    """Find the GreenButtonSensor instance for the given service_type."""
     domain_data = hass.data.get(DOMAIN, {})
     for entry_data in domain_data.values():
         if isinstance(entry_data, dict):

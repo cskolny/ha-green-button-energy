@@ -13,7 +13,7 @@
  *     updates the sensors directly — no filesystem access required
  */
 
-class RgeGreenButtonPanel extends HTMLElement {
+class GreenButtonEnergyPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -231,10 +231,10 @@ class RgeGreenButtonPanel extends HTMLElement {
       <div class="page">
         <h1>
           <ha-icon icon="mdi:lightning-bolt-circle"></ha-icon>
-          RG&amp;E Green Button Import
+          Green Button Energy Import
         </h1>
         <p class="subtitle">
-          Download your usage data from <strong>myrge.com → My Energy Use → Download Data</strong>,
+          Download your usage data from <strong>your utility website → My Energy Use → Download Data</strong>,
           then drop the CSV or XML file below.
         </p>
 
@@ -346,7 +346,7 @@ class RgeGreenButtonPanel extends HTMLElement {
 
       // Send to HA backend via WebSocket
       const response = await this._hass.connection.sendMessagePromise({
-        type: "rge_green_button/import_file",
+        type: "green_button_energy/import_file",
         filename: file.name,
         content: content,
         service_type: serviceType,
@@ -466,4 +466,4 @@ class RgeGreenButtonPanel extends HTMLElement {
   }
 }
 
-customElements.define("rge-green-button-panel", RgeGreenButtonPanel);
+customElements.define("green-button-energy-panel", RgeGreenButtonPanel);
