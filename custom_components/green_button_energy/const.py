@@ -23,6 +23,14 @@ SENSOR_GAS_UID       = f"{DOMAIN}_gas_total"
 UNIT_ELECTRIC = "kWh"
 UNIT_GAS      = "CCF"   # Therms ≈ CCF; HA gas device class requires a volume unit
 
+# Maps unit of measurement to the HA statistics unit_class value.
+# Used by sensor.py when constructing StatisticMetaData.
+# Avoids hardcoded string comparisons scattered across the codebase.
+UNIT_CLASS_MAP: dict[str, str] = {
+    UNIT_ELECTRIC: "energy",
+    UNIT_GAS:      "volume",
+}
+
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {".csv", ".xml"}
 

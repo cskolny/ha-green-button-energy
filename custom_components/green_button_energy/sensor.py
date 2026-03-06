@@ -18,8 +18,16 @@ from typing import Any, Optional
 
 from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import (
+    async_import_statistics,
+    get_last_statistics,
+    statistics_during_period,
+)
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -39,13 +47,18 @@ from .const import (
     SENSOR_ELECTRIC_UID,
     SENSOR_GAS_NAME,
     SENSOR_GAS_UID,
+    UNIT_CLASS_MAP,
     UNIT_ELECTRIC,
     UNIT_GAS,
 )
-from .parser import ParseResult, parse_file
+from .parser import ParseResult, _STORAGE_FMT, parse_file
 from .storage import load_store
 
 _LOGGER = logging.getLogger(__name__)
+
+# How far before the earliest new row to look for a pre-overlap baseline.
+# 25 hours covers DST transitions where a 1-hour gap can appear in stats.
+_OVERLAP_LOOKBACK = timedelta(hours=25)
 
 
 async def async_setup_entry(
@@ -139,6 +152,10 @@ class GreenButtonSensor(SensorEntity):
         Uses async_import_statistics so every hourly reading gets its correct
         past timestamp in the Energy Dashboard.
         """
+        # Reset last_result so callers never see stale data from a prior import
+        # if this call raises before completing.
+        self.last_result = None
+
         async with self._processing_lock:
             last_time: str = self._data.get(self._time_key, "")
 
@@ -166,12 +183,19 @@ class GreenButtonSensor(SensorEntity):
                 )
                 return
 
-            await self._import_statistics(result)
+            rows_written, newest_written = await self._import_statistics(result)
+
+            if rows_written == 0:
+                # All rows were clipped — nothing new was written to the DB.
+                # Do not advance last_time or update the running total.
+                return
 
             self._data[self._total_key] = round(
                 float(self._data.get(self._total_key, 0.0)) + result.new_usage, 6
             )
-            self._data[self._time_key] = result.newest_time
+            # Use the actual newest timestamp written to the DB, not the parser's
+            # newest_time, which may include rows that were clipped at db_boundary.
+            self._data[self._time_key] = newest_written
             self._data[LAST_FILE_KEY] = Path(file_path).name
             await self._store.async_save(self._data)
 
@@ -179,18 +203,19 @@ class GreenButtonSensor(SensorEntity):
             self.async_write_ha_state()
 
             _LOGGER.info(
-                "[%s] Imported %.4f %s (%d rows) from '%s'. Total: %.4f.",
+                "[%s] Imported %.4f %s (%d rows written, %d parsed) from '%s'. Total: %.4f.",
                 self._attr_name,
                 result.new_usage,
                 self._attr_native_unit_of_measurement,
+                rows_written,
                 result.rows_imported,
                 Path(file_path).name,
                 self._attr_native_value,
             )
 
-            self._send_success_notification(file_path, result)
+            self._send_success_notification(file_path, result, rows_written)
 
-    async def _import_statistics(self, result: ParseResult) -> None:
+    async def _import_statistics(self, result: ParseResult) -> tuple[int, str]:
         """
         Write hourly readings as long-term statistics into the recorder.
 
@@ -199,20 +224,22 @@ class GreenButtonSensor(SensorEntity):
         cases:
           1. Clean append   — new data starts after all existing stats
           2. Overlap        — find pre-overlap sum so existing rows are
-                             overwritten with correct cumulative sums
+                             overwritten with correct cumulative sums,
+                             but rows beyond the existing last stat are
+                             clipped to avoid overwriting live sensor stats
           3. First import   — no existing stats; baseline = 0
+
+        Returns:
+            (rows_written, newest_written_time) — the actual count and newest
+            timestamp of rows committed to the DB, which may be less than
+            result.rows_imported if db_boundary clipping occurred.
         """
         if not result.hourly_readings:
             _LOGGER.warning("[%s] No hourly readings to import.", self._attr_name)
-            return
+            return 0, result.newest_time
 
-        from homeassistant.components.recorder.statistics import (
-            get_last_statistics,
-            statistics_during_period,
-        )
-        from homeassistant.components.recorder.models import StatisticMeanType
-
-        sorted_readings = sorted(result.hourly_readings)
+        # Sort explicitly by timestamp for clarity
+        sorted_readings = sorted(result.hourly_readings, key=lambda x: x[0])
         earliest_dt = sorted_readings[0][0]
 
         # Get the overall last stat to detect overlap
@@ -226,22 +253,45 @@ class GreenButtonSensor(SensorEntity):
         )
 
         running_sum = 0.0
+        # db_boundary: the timestamp of the last stat already in the DB.
+        # In overlap mode we must not write rows beyond this point, because
+        # doing so would overwrite live-sensor stats with incorrectly
+        # calculated cumulative sums, producing negative deltas in the
+        # Energy Dashboard.
+        db_boundary: datetime | None = None
 
         if last_stats and self.entity_id in last_stats:
             last = last_stats[self.entity_id][0]
-            last_start = datetime.fromtimestamp(float(last["start"]), tz=timezone.utc)
+
+            # HA 2026.x returns start as a datetime; older versions return an
+            # epoch float. Handle both to stay compatible across HA versions.
+            start_val = last["start"]
+            if isinstance(start_val, datetime):
+                last_start = start_val if start_val.tzinfo else start_val.replace(tzinfo=timezone.utc)
+            else:
+                last_start = datetime.fromtimestamp(float(start_val), tz=timezone.utc)
 
             if last_start < earliest_dt:
-                # Clean append — use last sum directly as baseline
+                # Clean append — new data is entirely after existing stats.
+                # Use the last existing sum as the baseline.
                 running_sum = float(last.get("sum") or 0.0)
                 _LOGGER.debug(
                     "[%s] Clean append — baseline sum=%.4f from %s",
                     self._attr_name, running_sum, last_start,
                 )
             else:
-                # Overlap — find sum from the hour before our earliest row
-                window_start = earliest_dt - timedelta(hours=2)
-                window_end = earliest_dt
+                # Overlap — the file starts before (or at) the last existing
+                # stat. Find the sum from the hour immediately before our
+                # earliest new row to use as the baseline.
+                # Also record db_boundary so we clip rows that are already
+                # covered by existing stats beyond our import range.
+                db_boundary = last_start
+
+                # window_end is exclusive in statistics_during_period, so add
+                # 1 second to ensure a stat that lands exactly on earliest_dt
+                # is included in the look-back window if needed.
+                window_start = earliest_dt - _OVERLAP_LOOKBACK
+                window_end   = earliest_dt + timedelta(seconds=1)
 
                 pre_stats = await get_instance(self.hass).async_add_executor_job(
                     statistics_during_period,
@@ -256,12 +306,18 @@ class GreenButtonSensor(SensorEntity):
 
                 if pre_stats and self.entity_id in pre_stats:
                     pre_list = pre_stats[self.entity_id]
-                    before = [
-                        r for r in pre_list
-                        if datetime.fromtimestamp(float(r["start"]), tz=timezone.utc) < earliest_dt
-                    ]
+                    before = []
+                    for r in pre_list:
+                        r_start = r["start"]
+                        if isinstance(r_start, datetime):
+                            r_dt = r_start if r_start.tzinfo else r_start.replace(tzinfo=timezone.utc)
+                        else:
+                            r_dt = datetime.fromtimestamp(float(r_start), tz=timezone.utc)
+                        if r_dt < earliest_dt:
+                            before.append((r_dt, r))
+
                     if before:
-                        running_sum = float(before[-1].get("sum") or 0.0)
+                        running_sum = float(before[-1][1].get("sum") or 0.0)
                         _LOGGER.debug(
                             "[%s] Overlap — pre-overlap baseline sum=%.4f",
                             self._attr_name, running_sum,
@@ -273,29 +329,56 @@ class GreenButtonSensor(SensorEntity):
                     running_sum = 0.0
                     _LOGGER.debug("[%s] Overlap — no stats in window, using 0", self._attr_name)
 
-        # Build statistic rows with correct cumulative sums
+        # Clip rows at the db_boundary so we never overwrite stats that are
+        # ahead of our import data (e.g. live sensor readings for today).
+        # Without this, importing a historical file on a day when the sensor
+        # has already written a stat causes that slot to be overwritten with
+        # an incorrectly calculated cumulative sum, producing a negative delta
+        # in the Energy Dashboard in the following hour.
+        if db_boundary is not None:
+            original_count = len(sorted_readings)
+            sorted_readings = [(dt, u) for dt, u in sorted_readings if dt <= db_boundary]
+            clipped = original_count - len(sorted_readings)
+            if clipped:
+                _LOGGER.debug(
+                    "[%s] Clipped %d row(s) beyond db_boundary %s to avoid "
+                    "overwriting live stats.",
+                    self._attr_name, clipped, db_boundary,
+                )
+
+        if not sorted_readings:
+            _LOGGER.info(
+                "[%s] No rows remain after clipping to db_boundary — "
+                "all data already present in the database.",
+                self._attr_name,
+            )
+            return 0, result.newest_time
+
+        # StatisticData is a TypedDict — construct and access as a plain dict.
         statistic_data: list[StatisticData] = []
         for dt_utc, usage in sorted_readings:
             running_sum = round(running_sum + usage, 6)
-            statistic_data.append({
-                "start": dt_utc,
-                "state": round(usage, 6),
-                "sum": running_sum,
-            })
+            statistic_data.append(
+                StatisticData(
+                    start=dt_utc,
+                    state=round(usage, 6),
+                    sum=running_sum,
+                )
+            )
 
-        # unit_class values: kWh → 'energy', CCF → 'volume'
-        unit_class = "energy" if self._attr_native_unit_of_measurement == "kWh" else "volume"
+        unit_class = UNIT_CLASS_MAP.get(self._attr_native_unit_of_measurement, "energy")
 
-        metadata: StatisticMetaData = {
-            "has_mean": False,
-            "mean_type": StatisticMeanType.NONE,
-            "has_sum": True,
-            "name": self._attr_name,
-            "source": "recorder",
-            "statistic_id": self.entity_id,
-            "unit_class": unit_class,
-            "unit_of_measurement": self._attr_native_unit_of_measurement,
-        }
+        # StatisticMetaData is also a TypedDict — construct as a plain dict.
+        metadata = StatisticMetaData(
+            has_mean=False,
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=self._attr_name,
+            source="recorder",
+            statistic_id=self.entity_id,
+            unit_class=unit_class,
+            unit_of_measurement=self._attr_native_unit_of_measurement,
+        )
 
         first_sum = statistic_data[0]["sum"]
         last_sum = statistic_data[-1]["sum"]
@@ -307,17 +390,26 @@ class GreenButtonSensor(SensorEntity):
 
         async_import_statistics(self.hass, metadata, statistic_data)
 
-    def _send_success_notification(self, file_path: str, result: ParseResult) -> None:
+        # Return actual written count and the newest timestamp that was
+        # committed, which may differ from result.newest_time if rows were
+        # clipped at db_boundary.
+        newest_written = sorted_readings[-1][0].strftime(_STORAGE_FMT)
+        return len(statistic_data), newest_written
+
+    def _send_success_notification(self, file_path: str, result: ParseResult, rows_written: int) -> None:
         """Show a persistent notification on successful import."""
+        clipped = result.rows_imported - rows_written
+        clipped_note = f"\n⚠️ Rows clipped (already in DB): {clipped}" if clipped else ""
         pn_create(
             self.hass,
             message=(
                 f"**{self._attr_name}**\n\n"
                 f"📄 File: `{Path(file_path).name}`\n"
-                f"✅ Rows imported: {result.rows_imported}\n"
+                f"✅ Rows written: {rows_written}\n"
                 f"📊 New usage: {result.new_usage:.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🔢 Running total: {self._attr_native_value:.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🕐 Data through: {result.newest_time}"
+                f"{clipped_note}"
             ),
             title="Avangrid Green Button — Import Successful",
             notification_id=f"{NOTIF_SUCCESS}_{self._attr_unique_id}",

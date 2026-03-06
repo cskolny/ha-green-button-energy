@@ -24,10 +24,9 @@ Both parsers:
 from __future__ import annotations
 
 import csv
-import io
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
@@ -60,14 +59,22 @@ class ParseResult:
 
     @property
     def has_new_data(self) -> bool:
-        return self.new_usage > 0
+        """
+        True if any new rows were imported, regardless of their usage value.
+
+        Checking rows_imported (not new_usage > 0) ensures that legitimate
+        zero-usage intervals — e.g. a day with no consumption — are not
+        silently treated as "no new data".
+        """
+        return self.rows_imported > 0
 
 
 def _parse_stored_time(value: str) -> Optional[datetime]:
     """
     Parse a stored last_time string back to an aware UTC datetime.
-    Always returns a timezone-aware datetime so comparisons with
-    other aware datetimes never raise TypeError.
+
+    Returns a timezone-aware datetime, or None if the value is empty or
+    cannot be parsed. Callers must handle the None case.
     """
     if not value:
         return None
@@ -154,90 +161,98 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
 
     last_dt = _parse_stored_time(last_time)
 
+    # Stream the file directly rather than reading it all into memory first,
+    # which would create a full second copy as an io.StringIO buffer.
     try:
-        content = path.read_text(encoding="utf-8-sig")
+        f = path.open(encoding="utf-8-sig")
     except Exception as exc:
         result.errors.append(f"Could not read file '{path.name}': {exc}")
         return result
 
-    try:
-        reader = csv.DictReader(io.StringIO(content))
-    except Exception as exc:
-        result.errors.append(f"Failed to parse CSV '{path.name}': {exc}")
-        return result
+    with f:
+        try:
+            reader = csv.DictReader(f)
+        except Exception as exc:
+            result.errors.append(f"Failed to parse CSV '{path.name}': {exc}")
+            return result
 
-    if not reader.fieldnames:
-        result.errors.append(f"'{path.name}' has no header row.")
-        return result
+        if not reader.fieldnames:
+            result.errors.append(f"'{path.name}' has no header row.")
+            return result
 
-    # Normalise header lookup (case-insensitive)
-    headers_lower = {h.strip().lower(): h.strip() for h in reader.fieldnames}
+        # Normalise header lookup (case-insensitive).
+        # Guard against None entries that malformed CSV files can produce.
+        headers_lower = {
+            h.strip().lower(): h.strip()
+            for h in reader.fieldnames
+            if h is not None
+        }
 
-    def col(name: str) -> Optional[str]:
-        return headers_lower.get(name.lower())
+        def col(name: str) -> Optional[str]:
+            return headers_lower.get(name.lower())
 
-    time_col  = col("start time")
-    usage_col = col("usage")
-    type_col  = col("type")
+        time_col  = col("start time")
+        usage_col = col("usage")
+        type_col  = col("type")
 
-    if not time_col:
-        result.errors.append(
-            f"'{path.name}': missing 'Start Time' column. "
-            f"Found headers: {list(reader.fieldnames)}"
+        if not time_col:
+            result.errors.append(
+                f"'{path.name}': missing 'Start Time' column. "
+                f"Found headers: {list(reader.fieldnames)}"
+            )
+            return result
+        if not usage_col:
+            result.errors.append(
+                f"'{path.name}': missing 'Usage' column. "
+                f"Found headers: {list(reader.fieldnames)}"
+            )
+            return result
+
+        _LOGGER.debug(
+            "[%s] CSV columns — time: '%s', usage: '%s', type: '%s'",
+            path.name, time_col, usage_col, type_col,
         )
-        return result
-    if not usage_col:
-        result.errors.append(
-            f"'{path.name}': missing 'Usage' column. "
-            f"Found headers: {list(reader.fieldnames)}"
-        )
-        return result
 
-    _LOGGER.debug(
-        "[%s] CSV columns — time: '%s', usage: '%s', type: '%s'",
-        path.name, time_col, usage_col, type_col,
-    )
+        for row in reader:
+            # Filter by service type if the Type column exists
+            if type_col:
+                row_type = (row.get(type_col) or "").strip().lower()
+                if row_type and row_type != service_type.lower():
+                    result.rows_skipped += 1
+                    continue
 
-    for row in reader:
-        # Filter by service type if the Type column exists
-        if type_col:
-            row_type = (row.get(type_col) or "").strip().lower()
-            if row_type and row_type != service_type.lower():
+            raw_time  = (row.get(time_col)  or "").strip()
+            raw_usage = (row.get(usage_col) or "").strip()
+
+            if not raw_time:
                 result.rows_skipped += 1
                 continue
 
-        raw_time  = (row.get(time_col)  or "").strip()
-        raw_usage = (row.get(usage_col) or "").strip()
+            row_dt = _parse_csv_timestamp(raw_time)
+            if row_dt is None:
+                _LOGGER.debug("[%s] Unparseable timestamp: '%s'", path.name, raw_time)
+                result.rows_skipped += 1
+                continue
 
-        if not raw_time:
-            result.rows_skipped += 1
-            continue
+            # Skip already-imported rows
+            if last_dt is not None and row_dt <= last_dt:
+                result.rows_skipped += 1
+                continue
 
-        row_dt = _parse_csv_timestamp(raw_time)
-        if row_dt is None:
-            _LOGGER.debug("[%s] Unparseable timestamp: '%s'", path.name, raw_time)
-            result.rows_skipped += 1
-            continue
+            try:
+                usage = float(raw_usage.replace(",", ""))
+            except (ValueError, AttributeError):
+                _LOGGER.debug("[%s] Non-numeric usage: '%s'", path.name, raw_usage)
+                result.rows_skipped += 1
+                continue
 
-        # Skip already-imported rows
-        if last_dt is not None and row_dt <= last_dt:
-            result.rows_skipped += 1
-            continue
+            result.new_usage     += usage
+            result.rows_imported += 1
+            result.hourly_readings.append((row_dt, usage))
 
-        try:
-            usage = float(raw_usage.replace(",", ""))
-        except (ValueError, AttributeError):
-            _LOGGER.debug("[%s] Non-numeric usage: '%s'", path.name, raw_usage)
-            result.rows_skipped += 1
-            continue
-
-        result.new_usage  += usage
-        result.rows_imported += 1
-        result.hourly_readings.append((row_dt, usage))
-
-        stored = row_dt.strftime(_STORAGE_FMT)
-        if not result.newest_time or stored > result.newest_time:
-            result.newest_time = stored
+            stored = row_dt.strftime(_STORAGE_FMT)
+            if not result.newest_time or stored > result.newest_time:
+                result.newest_time = stored
 
     _LOGGER.info(
         "[%s] CSV %s: %d rows imported (%.4f units), %d skipped.",

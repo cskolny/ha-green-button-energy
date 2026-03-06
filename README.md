@@ -1,6 +1,6 @@
 # Green Button Energy Import — Home Assistant Custom Integration
 
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.2%2B-blue?logo=homeassistant)](https://www.home-assistant.io/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.1%2B-blue?logo=homeassistant)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Import your **Avangrid utility** smart meter usage data directly into the [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/) via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and **gas** (CCF/therms) usage from Green Button CSV and XML exports.
@@ -30,9 +30,10 @@ This integration works with any Avangrid utility that provides Green Button data
 - ⚡ **Drag-and-drop import** — dedicated sidebar panel, no command line needed
 - 📊 **Full historical backfill** — imports all hourly data with correct past timestamps into the Energy Dashboard
 - 🔁 **Safe re-imports** — duplicate rows are automatically skipped; overlapping files can be re-dropped safely
+- 🛡️ **Live data protection** — imports are clipped at the last existing stat boundary, preventing overwrites of live sensor data and the negative-consumption values they would cause
 - 📁 **CSV and XML support** — works with both Avangrid Opower CSV exports and standard Green Button ESPI XML exports
-- 🔔 **Import notifications** — persistent HA notifications confirm row counts and usage totals on success or failure
-- 🔌 **No YAML configuration** — fully UI-driven setup except for one `panel_custom` entry (see below)
+- 🔔 **Import notifications** — persistent HA notifications confirm rows written, rows clipped, and usage totals on success or failure
+- 🔌 **Fully automatic setup** — no `configuration.yaml` changes required; the sidebar panel registers itself when the integration is added
 - 🏠 **Energy Dashboard ready** — sensors use the correct `device_class`, `state_class`, and units for HA's Energy Dashboard
 
 ---
@@ -97,46 +98,27 @@ This integration is not yet in the HACS default store. You can add it as a custo
 
 ## Configuration
 
-### Step 1 — Register the sidebar panel
+No `configuration.yaml` changes are needed. The sidebar panel registers itself automatically when the integration loads.
 
-Add the following to your `configuration.yaml` (one-time only):
+### Step 1 — Restart Home Assistant
 
-```yaml
-panel_custom:
-  - name: green-button-energy-panel
-    sidebar_title: Green Button Import
-    sidebar_icon: mdi:lightning-bolt-circle
-    url_path: green-button-energy
-    module_url: /local/green_button_energy/green-button-energy-panel.js
-```
-
-> **Why is YAML needed?** Home Assistant removed the programmatic Python API for registering sidebar panels in recent versions. The `panel_custom` entry is the only supported method and only needs to be added once.
-
-### Step 2 — Restart Home Assistant
+After copying the files:
 
 ```bash
 docker compose restart homeassistant
 # or via UI: Settings → System → Restart
 ```
 
-On first start the integration automatically copies the panel JavaScript file to `config/www/green_button_energy/` so it can be served by HA's built-in web server. If the sidebar panel fails to load after restart, copy it manually:
-
-```bash
-mkdir -p /config/www/green_button_energy
-cp /config/custom_components/green_button_energy/frontend/green-button-energy-panel.js \
-   /config/www/green_button_energy/
-```
-
-Then do a hard browser refresh (**Ctrl+Shift+R** / **Cmd+Shift+R**) — no restart needed.
-
-### Step 3 — Add the Integration
+### Step 2 — Add the Integration
 
 1. Go to **Settings → Devices & Services**
 2. Click **+ Add Integration**
 3. Search for **Green Button Energy Import**
 4. Click **Submit** — no additional configuration required
 
-### Step 4 — Add Sensors to the Energy Dashboard
+The **Green Button Import** panel will appear in your sidebar immediately after setup completes. No browser refresh is needed.
+
+### Step 3 — Add Sensors to the Energy Dashboard
 
 1. Go to **Settings → Energy**
 2. Under **Electricity → Grid consumption** → **Add consumption** → select `Avangrid Electric Total`
@@ -170,6 +152,16 @@ Log in to your Avangrid utility website and navigate to your energy usage or acc
 3. Wait for the success notification confirming the row count and usage total
 4. Drag your gas CSV or XML onto the 🔥 **Gas Usage** zone
 5. The Energy Dashboard will populate with historical hourly data immediately
+
+### Success Notification
+
+After a successful import the notification shows:
+
+- **Rows written** — rows actually committed to the long-term statistics database
+- **New usage** — total energy/gas in the imported rows
+- **Running total** — cumulative sensor total since integration was set up
+- **Data through** — the newest timestamp actually written to the DB
+- **Rows clipped** *(only shown when > 0)* — rows from your file that were beyond the last existing stat in the DB and were intentionally skipped to protect live sensor data from being overwritten
 
 ### Weekly Workflow
 
@@ -233,6 +225,12 @@ Green Button Import Panel      WebSocket Handler
                           ParseResult
                           (hourly_readings[])
                                  │
+                          _import_statistics()
+                          • query last existing stat
+                          • detect clean append vs overlap
+                          • clip rows at db_boundary
+                          • build cumulative sums
+                                 │
                           recorder.async_import_statistics()
                           (writes historical stats to DB)
                                  │
@@ -246,7 +244,48 @@ Simply updating a sensor's state only records a single data point at the current
 
 ### Duplicate Prevention
 
-Each successful import stores the timestamp of the most recently imported reading in HA's `.storage` directory (`green_button_energy_data`). On subsequent imports, any row with a timestamp at or before this value is skipped.
+Each successful import stores the timestamp of the most recently **written** stat in HA's `.storage` directory (`green_button_energy_data`). On subsequent imports, any row with a timestamp at or before this value is skipped.
+
+### Live Data Protection
+
+When you import a historical file on a day when HA has already recorded live sensor stats (e.g. the current hour), a naive import would overwrite those stats with incorrectly calculated cumulative sums, producing negative consumption values in the Energy Dashboard. The integration prevents this by clipping any import rows that go beyond the last existing stat in the database (`db_boundary`). If clipping occurs it is reported in the success notification.
+
+### File Size Limit
+
+Files larger than **10 MB** are rejected before any processing occurs. Green Button exports for a full year of hourly data are typically well under 2 MB. The limit exists to protect against memory pressure on the Raspberry Pi.
+
+---
+
+## Development & Deployment
+
+### Infrastructure
+
+| Component | Value |
+|-----------|-------|
+| Dev machine | macOS (VSCode) |
+| Target | Raspberry Pi 4 running HA in Docker |
+| HA config path | `/home/pi/homeassistant/config/` |
+| Integration path | `/home/pi/homeassistant/config/custom_components/green_button_energy/` |
+| Storage file | `/home/pi/homeassistant/config/.storage/green_button_energy_data` |
+
+### Deploying Changes
+
+A `deploy.sh` script handles the full deploy cycle from your Mac to the Pi:
+
+```bash
+./deploy.sh              # deploy and restart HA
+./deploy.sh --skip-restart   # deploy without restarting (JS-only changes)
+```
+
+The script:
+1. Ensures the `custom_components` directory is owned by `pi` (fixes Docker root-ownership issues)
+2. rsyncs all integration files to the Pi, excluding `__pycache__`, `*.pyc`, and `.DS_Store`
+3. Stamps `manifest.json` with the current git SHA so HA always reloads the integration cleanly
+4. Restarts HA via `docker compose restart homeassistant`
+5. Polls `http://localhost:8123/api/` until HA responds with HTTP 200 or 401 (both indicate HA is up), with a 120-second timeout
+6. Prints the git SHA and a browser hard-refresh reminder
+
+> **Note:** The deploy script reads the current git SHA for labeling but does **not** commit or push to GitHub. Committing is always a deliberate manual step.
 
 ---
 
@@ -278,14 +317,17 @@ If you need to wipe all data and start over:
 ### "No new data found" notification
 The integration's stored `last_time` is already at or past the end of your file. Download a more recent date range from your utility website, or delete `.storage/green_button_energy_data` and restart to reset.
 
+### Negative consumption values in Energy Dashboard
+This can happen if a previous import wrote stats that overlap with live sensor data. Follow the full reset procedure above, then reimport all files oldest-to-newest. The current version prevents this automatically via `db_boundary` clipping, but data imported with an older version may need to be reset.
+
 ### Sensor doesn't appear in Energy Dashboard gas section
 Verify in **Developer Tools → States** that `sensor.avangrid_gas_total` shows `device_class: gas` and `unit_of_measurement: CCF`.
 
-### Energy Dashboard shows negative values or gaps
-Follow the full reset procedure above, then reimport all files oldest-to-newest.
-
 ### "Connection error" when dropping a file
 Check **Settings → System → Logs** and filter for `green_button_energy`. Common causes: integration not fully loaded, file is not valid UTF-8, or HA WebSocket connection dropped — refresh the browser and try again.
+
+### Sidebar panel doesn't appear after setup
+The panel registers automatically when the integration loads. Try **Settings → System → Restart** and then a hard browser refresh (**Cmd+Shift+R** / **Ctrl+Shift+R**). If it still doesn't appear, check the HA logs for errors from `green_button_energy`.
 
 ### Integration not found in Settings → Add Integration
 The `custom_components/green_button_energy/` folder name must use **underscores** and match exactly. Verify:
@@ -294,8 +336,14 @@ ls /config/custom_components/
 # Should show: green_button_energy
 ```
 
-### Panel JS 404 in browser console
-Verify `config/www/green_button_energy/green-button-energy-panel.js` exists after restart. If not, check that the `frontend/` subfolder exists inside your custom component directory.
+### Deploy script permission error
+If `rsync` fails with a permission error, the `custom_components` directory may be owned by root from a previous Docker run. The deploy script automatically runs `sudo chown -R pi:pi` on the `custom_components` directory before syncing to fix this.
+
+### Deploy script health check times out
+HA 2026.x returns HTTP 401 from `/api/` when no auth token is provided. The deploy script accepts both 200 and 401 as healthy responses. If it still times out, HA may be taking longer than 120 seconds — check the Pi logs directly:
+```bash
+ssh pi@homeassistant.local 'cd /home/pi/homeassistant && docker compose logs --tail=50 homeassistant'
+```
 
 ---
 
