@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.components.recorder import get_instance
@@ -30,6 +30,7 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import StateType
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
@@ -50,8 +51,6 @@ from .const import (
     UNIT_ELECTRIC,
     UNIT_GAS,
 )
-# FIX #2: must be ".parser" (relative import), not "parser" (Python stdlib)
-# FIX #1: UNIT_CLASS_MAP is NOT in const.py — unit_class is inlined below instead
 from .parser import ParseResult, _STORAGE_FMT, parse_file
 from .storage import load_store
 
@@ -138,9 +137,11 @@ class GreenButtonSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_name = name
         self._attr_unique_id = unique_id
-        self._attr_native_value: float = float(data.get(total_key, 0.0))
+        # StateType is the HA-standard type for native_value (str | int | float | None).
+        # We narrow it to float | None in practice; None signals "not yet loaded".
+        self._attr_native_value: StateType = float(data.get(total_key, 0.0))
         self._processing_lock = asyncio.Lock()
-        self.last_result: Optional[ParseResult] = None
+        self.last_result: ParseResult | None = None
 
     async def async_update(self) -> None:
         """Refresh state from stored data (called once at startup)."""
@@ -191,9 +192,8 @@ class GreenButtonSensor(SensorEntity):
                 # Do not advance last_time or update the running total.
                 return
 
-            # FIX #6: use written_usage (usage of surviving rows only), not
-            # result.new_usage, which includes any clipped rows and would
-            # inflate the stored running total.
+            # Use written_usage (surviving rows only), not result.new_usage,
+            # which includes any clipped rows and would inflate the running total.
             self._data[self._total_key] = round(
                 float(self._data.get(self._total_key, 0.0)) + written_usage, 6
             )
@@ -259,7 +259,7 @@ class GreenButtonSensor(SensorEntity):
         # We must NOT write rows at or after this point — doing so overwrites
         # live-sensor stats with import-calculated sums, breaking the
         # cumulative chain and producing negative deltas in the Energy Dashboard.
-        db_boundary: Optional[datetime] = None
+        db_boundary: datetime | None = None
 
         if last_stats and self.entity_id in last_stats:
             last = last_stats[self.entity_id][0]
@@ -326,10 +326,8 @@ class GreenButtonSensor(SensorEntity):
                     running_sum = 0.0
                     _LOGGER.debug("[%s] Overlap — no stats in window, using 0", self._attr_name)
 
-        # FIX #4: use strict less-than (<) so the db_boundary stat itself is
-        # excluded from the import. The db_boundary row IS the last live stat;
-        # including it (<=) would overwrite it with our calculated sum, which
-        # is the exact failure mode we're guarding against.
+        # Clip rows at the db_boundary so we never overwrite stats that are
+        # ahead of our import data (e.g. live sensor readings for today).
         if db_boundary is not None:
             original_count = len(sorted_readings)
             sorted_readings = [(dt, u) for dt, u in sorted_readings if dt < db_boundary]
@@ -349,7 +347,6 @@ class GreenButtonSensor(SensorEntity):
             )
             return 0, 0.0, result.newest_time
 
-        # Build StatisticData rows with correct running sums.
         statistic_data: list[StatisticData] = []
         for dt_utc, usage in sorted_readings:
             running_sum = round(running_sum + usage, 6)
@@ -361,8 +358,6 @@ class GreenButtonSensor(SensorEntity):
                 )
             )
 
-        # FIX #1: UNIT_CLASS_MAP was referenced but never added to const.py.
-        # Inline the unit-class mapping here instead.
         unit_class = "energy" if self._attr_native_unit_of_measurement == UNIT_ELECTRIC else "volume"
 
         metadata = StatisticMetaData(
@@ -386,7 +381,6 @@ class GreenButtonSensor(SensorEntity):
 
         async_import_statistics(self.hass, metadata, statistic_data)
 
-        # Return actual written count, usage of written rows only, and newest timestamp.
         written_usage = sum(u for _, u in sorted_readings)
         newest_written = sorted_readings[-1][0].strftime(_STORAGE_FMT)
         return len(statistic_data), written_usage, newest_written

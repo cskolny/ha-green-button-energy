@@ -16,6 +16,7 @@ import os
 import pathlib
 import shutil
 import tempfile
+from typing import TYPE_CHECKING
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
@@ -23,6 +24,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+
+# TYPE_CHECKING guard avoids a circular import at runtime:
+#   __init__.py → sensor.py → (no back-reference)
+# The import is only evaluated by mypy/type checkers, never at runtime.
+if TYPE_CHECKING:
+    from .sensor import GreenButtonSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -176,7 +183,7 @@ async def ws_handle_import_file(
         await hass.async_add_executor_job(os.unlink, tmp_path)
 
 
-def _find_sensor(hass: HomeAssistant, service_type: str):
+def _find_sensor(hass: HomeAssistant, service_type: str) -> GreenButtonSensor | None:
     """Find the GreenButtonSensor instance for the given service_type."""
     domain_data = hass.data.get(DOMAIN, {})
     for entry_data in domain_data.values():

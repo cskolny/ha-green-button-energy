@@ -28,9 +28,8 @@ import csv
 import io
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 from xml.etree import ElementTree as ET
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,10 +37,9 @@ _LOGGER = logging.getLogger(__name__)
 # ESPI XML namespace
 _ESPI_NS = "http://naesb.org/espi"
 
-# Canonical storage format for last_time — always UTC, no tzinfo ambiguity
+# Canonical storage format for last_time — always UTC, no tzinfo ambiguity.
+# Public name used by sensor.py; private alias kept for backward compatibility.
 STORAGE_TIME_FMT = "%Y-%m-%d %H:%M:%S+00:00"
-
-# Keep the private alias so any code referencing _STORAGE_FMT still works
 _STORAGE_FMT = STORAGE_TIME_FMT
 
 
@@ -67,7 +65,7 @@ class ParseResult:
         return self.new_usage > 0
 
 
-def _parse_stored_time(value: str) -> Optional[datetime]:
+def _parse_stored_time(value: str) -> datetime | None:
     """
     Parse a stored last_time string back to an aware UTC datetime.
     Always returns a timezone-aware datetime so comparisons with
@@ -91,7 +89,7 @@ def _parse_stored_time(value: str) -> Optional[datetime]:
     return None
 
 
-def _parse_csv_timestamp(value: str) -> Optional[datetime]:
+def _parse_csv_timestamp(value: str) -> datetime | None:
     """
     Parse an RG&E CSV timestamp which may be timezone-aware.
     e.g. "2026-03-01 00:00:00-05:00"
@@ -174,7 +172,7 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
     # Normalise header lookup (case-insensitive)
     headers_lower = {h.strip().lower(): h.strip() for h in reader.fieldnames}
 
-    def col(name: str) -> Optional[str]:
+    def col(name: str) -> str | None:
         return headers_lower.get(name.lower())
 
     time_col  = col("start time")
@@ -239,7 +237,7 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
-        result.new_usage  += usage
+        result.new_usage     += usage
         result.rows_imported += 1
         result.hourly_readings.append((row_dt, usage))
 
@@ -298,7 +296,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
         return f"{{{_ESPI_NS}}}{tag}"
 
     # ── Read ServiceCategory/kind to detect electric (0) vs gas (1) ──────────
-    detected_kind: Optional[int] = None
+    detected_kind: int | None = None
     for sc in root.iter(espi("ServiceCategory")):
         kind_el = sc.find(espi("kind"))
         if kind_el is not None and kind_el.text:
@@ -319,8 +317,8 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
         )
 
     # ── Read ReadingType: powerOfTenMultiplier and uom ───────────────────────
-    power_of_ten: Optional[int] = None
-    uom: Optional[int] = None
+    power_of_ten: int | None = None
+    uom: int | None = None
 
     for rt in root.iter(espi("ReadingType")):
         pot_el = rt.find(espi("powerOfTenMultiplier"))
