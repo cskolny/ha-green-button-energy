@@ -32,10 +32,10 @@ This integration works with any Avangrid utility that provides Green Button data
 - ⚡ **Drag-and-drop import** — dedicated sidebar panel, no command line needed
 - 📊 **Full historical backfill** — imports all hourly data with correct past timestamps into the Energy Dashboard
 - 🔁 **Safe re-imports** — duplicate rows are automatically skipped; overlapping files can be re-dropped safely
-- 🛡️ **Live data protection** — imports are clipped at the last existing stat boundary, preventing overwrites of live sensor data and the negative-consumption values they would cause
+- 🛡️ **Live data protection** — imports are clipped at the last existing stat boundary, preventing overwrites of live sensor data and the negative consumption values they would cause
 - 📁 **CSV and XML support** — works with both Avangrid Opower CSV exports and standard Green Button ESPI XML exports
 - 🔔 **Import notifications** — persistent HA notifications confirm rows written, rows clipped, and usage totals on success or failure
-- 🔌 **Fully automatic setup** — no `configuration.yaml` changes required; the sidebar panel registers itself when the integration is added
+- 🔌 **No YAML configuration** — fully UI-driven setup; the sidebar panel registers itself automatically
 - 🏠 **Energy Dashboard ready** — sensors use the correct `device_class`, `state_class`, and units for HA's Energy Dashboard
 
 ---
@@ -96,13 +96,13 @@ Both sensors are automatically available in **Settings → Energy** for the Elec
 2. Add `https://github.com/cskolny/ha-green-button-energy` with category **Integration**
 3. Search for "Green Button Energy Import" and install
 
-**Default HACS store:** Submission pending. Once approved, you will be able to find and install this integration by searching for "Green Button Energy Import" directly in HACS without adding a custom repository.
+**Default HACS store:** Submission pending.
 
 ---
 
 ## Configuration
 
-No `configuration.yaml` changes are needed. The sidebar panel registers itself automatically when the integration loads.
+No `configuration.yaml` changes are required. The sidebar panel registers itself automatically when the integration loads.
 
 ### Step 1 — Restart Home Assistant
 
@@ -120,7 +120,7 @@ docker compose restart homeassistant
 3. Search for **Green Button Energy Import**
 4. Click **Submit** — no additional configuration required
 
-The **Green Button Import** panel will appear in your sidebar immediately after setup completes. No browser refresh is needed.
+The **Green Button Import** panel will appear in your sidebar immediately after setup completes.
 
 ### Step 3 — Add Sensors to the Energy Dashboard
 
@@ -165,7 +165,7 @@ After a successful import the notification shows:
 - **New usage** — total energy/gas in the imported rows
 - **Running total** — cumulative sensor total since integration was set up
 - **Data through** — the newest timestamp actually written to the DB
-- **Rows clipped** *(only shown when > 0)* — rows from your file that were beyond the last existing stat in the DB and were intentionally skipped to protect live sensor data from being overwritten
+- **Rows clipped** *(only shown when > 0)* — rows beyond the last existing DB stat that were skipped to protect live sensor data
 
 ### Weekly Workflow
 
@@ -176,15 +176,13 @@ Avangrid utilities update smart meter data with a ~48 hour delay. A typical week
 3. Drop the gas file into the 🔥 zone
 4. Done — new data appears in the Energy Dashboard
 
-Duplicate rows from overlapping date ranges are automatically skipped, so you can always download a slightly wider range without worrying about double-counting.
+Duplicate rows from overlapping date ranges are automatically skipped.
 
 ---
 
 ## Supported File Formats
 
 ### CSV (Opower Export)
-
-Standard spreadsheet export containing hourly interval data. Uses a `Type` column to distinguish electric from gas rows, so a single combined file is handled correctly.
 
 | Column | Description |
 |--------|-------------|
@@ -193,8 +191,6 @@ Standard spreadsheet export containing hourly interval data. Uses a `Type` colum
 | `Type` | `electric` or `gas` |
 
 ### XML (Green Button ESPI)
-
-The industry-standard Green Button format. Separate XML files are typically provided for electric and gas.
 
 | Service | ServiceCategory kind | uom | Conversion |
 |---------|---------------------|-----|-----------|
@@ -248,15 +244,15 @@ Simply updating a sensor's state only records a single data point at the current
 
 ### Duplicate Prevention
 
-Each successful import stores the timestamp of the most recently **written** stat in HA's `.storage` directory (`green_button_energy_data`). On subsequent imports, any row with a timestamp at or before this value is skipped.
+Each successful import stores the timestamp of the most recently **written** stat in HA's `.storage` directory (`green_button_energy_data`). On subsequent imports, any row at or before this timestamp is skipped.
 
 ### Live Data Protection
 
-When you import a historical file on a day when HA has already recorded live sensor stats (e.g. the current hour), a naive import would overwrite those stats with incorrectly calculated cumulative sums, producing negative consumption values in the Energy Dashboard. The integration prevents this by clipping any import rows that go beyond the last existing stat in the database (`db_boundary`). If clipping occurs it is reported in the success notification.
+When importing a historical file on a day when HA has already recorded live sensor stats, a naive import would overwrite those stats with incorrectly calculated cumulative sums, producing negative consumption values in the Energy Dashboard. The integration prevents this by clipping any import rows that go beyond the last existing stat in the database (`db_boundary`). Clipping is reported in the success notification.
 
 ### File Size Limit
 
-Files larger than **10 MB** are rejected before any processing occurs. Green Button exports for a full year of hourly data are typically well under 2 MB. The limit protects against memory pressure from oversized or malformed uploads.
+Files larger than **10 MB** are rejected before any processing occurs. Green Button exports for a full year of hourly data are typically well under 2 MB.
 
 ---
 
@@ -286,10 +282,10 @@ If you need to wipe all data and start over:
 ## Troubleshooting
 
 ### "No new data found" notification
-The integration's stored `last_time` is already at or past the end of your file. Download a more recent date range from your utility website, or delete `.storage/green_button_energy_data` and restart to reset.
+The integration's stored `last_time` is already at or past the end of your file. Download a more recent date range, or delete `.storage/green_button_energy_data` and restart to reset.
 
 ### Negative consumption values in Energy Dashboard
-This can happen if a previous import wrote stats that overlap with live sensor data. Follow the full reset procedure above, then reimport all files oldest-to-newest. The current version prevents this automatically via `db_boundary` clipping, but data imported with an older version may need to be reset.
+This can happen if data imported with v1.0.0 overlaps with live sensor stats. Follow the full reset procedure above and reimport. v1.1.0 prevents this automatically via `db_boundary` clipping.
 
 ### Sensor doesn't appear in Energy Dashboard gas section
 Verify in **Developer Tools → States** that `sensor.avangrid_gas_total` shows `device_class: gas` and `unit_of_measurement: CCF`.
@@ -298,7 +294,7 @@ Verify in **Developer Tools → States** that `sensor.avangrid_gas_total` shows 
 Check **Settings → System → Logs** and filter for `green_button_energy`. Common causes: integration not fully loaded, file is not valid UTF-8, or HA WebSocket connection dropped — refresh the browser and try again.
 
 ### Sidebar panel doesn't appear after setup
-The panel registers automatically when the integration loads. Try **Settings → System → Restart** and then a hard browser refresh (**Cmd+Shift+R** / **Ctrl+Shift+R**). If it still doesn't appear, check the HA logs for errors from `green_button_energy`.
+Try **Settings → System → Restart** and then a hard browser refresh (**Cmd+Shift+R** / **Ctrl+Shift+R**). If it still doesn't appear, check the HA logs for errors from `green_button_energy`.
 
 ### Integration not found in Settings → Add Integration
 The `custom_components/green_button_energy/` folder name must use **underscores** and match exactly. Verify:
@@ -306,7 +302,6 @@ The `custom_components/green_button_energy/` folder name must use **underscores*
 ls /config/custom_components/
 # Should show: green_button_energy
 ```
-
 
 ---
 

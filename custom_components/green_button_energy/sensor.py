@@ -30,7 +30,6 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import StateType
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
@@ -137,9 +136,7 @@ class GreenButtonSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_name = name
         self._attr_unique_id = unique_id
-        # StateType is the HA-standard type for native_value (str | int | float | None).
-        # We narrow it to float | None in practice; None signals "not yet loaded".
-        self._attr_native_value: StateType = float(data.get(total_key, 0.0))
+        self._attr_native_value: float = float(data.get(total_key, 0.0))
         self._processing_lock = asyncio.Lock()
         self.last_result: ParseResult | None = None
 
