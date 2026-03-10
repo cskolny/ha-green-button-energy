@@ -6,14 +6,17 @@
  *
  * Architecture:
  *   - Runs entirely in the browser as a native Web Component
- *   - Reads the dropped file as UTF-8 text in the browser
+ *   - Validates file size client-side before reading (matches 10 MB backend limit)
+ *   - Reads the dropped file as UTF-8 text via FileReader
  *   - Sends content over the existing HA WebSocket connection
  *     using hass.connection.sendMessagePromise (no extra auth needed)
  *   - Backend WebSocket handler parses the file in memory and
  *     updates the sensors directly — no filesystem access required
- *
- * @version 1.0.2
  */
+
+// Maximum file size — must match _MAX_FILE_BYTES in __init__.py
+const _MAX_FILE_MB = 10;
+const _MAX_FILE_BYTES = _MAX_FILE_MB * 1024 * 1024;
 
 class GreenButtonEnergyPanel extends HTMLElement {
   constructor() {
@@ -233,7 +236,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
       <div class="page">
         <h1>
           <ha-icon icon="mdi:lightning-bolt-circle"></ha-icon>
-          Energy Import
+          Green Button Energy Import
         </h1>
         <p class="subtitle">
           Download your usage data from <strong>your utility website → My Energy Use → Download Data</strong>,
@@ -324,6 +327,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
   }
 
   async _handleFile(file, serviceType, zone) {
+    // Validate file extension
     const ext = file.name.split(".").pop().toLowerCase();
     if (!["csv", "xml"].includes(ext)) {
       this._addResult({
@@ -331,6 +335,20 @@ class GreenButtonEnergyPanel extends HTMLElement {
         filename: file.name,
         serviceType,
         message: `Unsupported file type ".${ext}". Please use .csv or .xml.`,
+      });
+      return;
+    }
+
+    // Reject files over the size limit before reading — avoids reading a huge
+    // file into memory only to have the backend reject it anyway.
+    if (file.size > _MAX_FILE_BYTES) {
+      this._addResult({
+        type: "error",
+        filename: file.name,
+        serviceType,
+        message: `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). `
+               + `Maximum size is ${_MAX_FILE_MB} MB. `
+               + `Please download a smaller date range from your utility website.`,
       });
       return;
     }
@@ -345,6 +363,11 @@ class GreenButtonEnergyPanel extends HTMLElement {
 
     try {
       const content = await this._readFileAsText(file);
+
+      // Guard against a disconnected WebSocket before sending
+      if (!this._hass?.connection) {
+        throw new Error("Lost connection to Home Assistant. Please refresh the page and try again.");
+      }
 
       // Send to HA backend via WebSocket
       const response = await this._hass.connection.sendMessagePromise({
@@ -382,11 +405,12 @@ class GreenButtonEnergyPanel extends HTMLElement {
         });
       }
     } catch (err) {
+      const msg = err?.message || String(err) || "Unknown connection error.";
       this._addResult({
         type: "error",
         filename: file.name,
         serviceType,
-        message: `Connection error: ${err.message || err}`,
+        message: `Error: ${msg}`,
       });
     } finally {
       zone.classList.remove("processing");
@@ -399,7 +423,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.onerror = () => reject(new Error("Failed to read file — it may be corrupt or unreadable."));
       reader.readAsText(file, "UTF-8");
     });
   }

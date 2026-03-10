@@ -17,6 +17,7 @@ XML format (ESPI / Green Button standard):
 
 Both parsers:
     - Skip rows/readings already imported (newer than last_seen_time)
+    - Skip rows with negative or zero usage (utility correction rows)
     - Run in executor thread pool (no event loop blocking)
     - Return a ParseResult dataclass with full diagnostics
 """
@@ -24,9 +25,10 @@ Both parsers:
 from __future__ import annotations
 
 import csv
+import io
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
@@ -37,7 +39,10 @@ _LOGGER = logging.getLogger(__name__)
 _ESPI_NS = "http://naesb.org/espi"
 
 # Canonical storage format for last_time — always UTC, no tzinfo ambiguity
-_STORAGE_FMT = "%Y-%m-%d %H:%M:%S+00:00"
+STORAGE_TIME_FMT = "%Y-%m-%d %H:%M:%S+00:00"
+
+# Keep the private alias so any code referencing _STORAGE_FMT still works
+_STORAGE_FMT = STORAGE_TIME_FMT
 
 
 @dataclass
@@ -45,7 +50,7 @@ class ParseResult:
     """Result returned from a parse operation."""
 
     new_usage: float = 0.0
-    newest_time: str = ""          # UTC timestamp string, stored in _STORAGE_FMT
+    newest_time: str = ""          # UTC timestamp string, stored in STORAGE_TIME_FMT
     rows_imported: int = 0
     rows_skipped: int = 0
     errors: list[str] = field(default_factory=list)
@@ -59,26 +64,17 @@ class ParseResult:
 
     @property
     def has_new_data(self) -> bool:
-        """
-        True if any new rows were imported, regardless of their usage value.
-
-        Checking rows_imported (not new_usage > 0) ensures that legitimate
-        zero-usage intervals — e.g. a day with no consumption — are not
-        silently treated as "no new data".
-        """
-        return self.rows_imported > 0
+        return self.new_usage > 0
 
 
 def _parse_stored_time(value: str) -> Optional[datetime]:
     """
     Parse a stored last_time string back to an aware UTC datetime.
-
-    Returns a timezone-aware datetime, or None if the value is empty or
-    cannot be parsed. Callers must handle the None case.
+    Always returns a timezone-aware datetime so comparisons with
+    other aware datetimes never raise TypeError.
     """
     if not value:
         return None
-    # fromisoformat handles "2026-03-01 05:00:00+00:00" correctly
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
@@ -102,7 +98,6 @@ def _parse_csv_timestamp(value: str) -> Optional[datetime]:
     Returns an aware UTC datetime.
     """
     value = value.strip()
-    # Python 3.7+ fromisoformat handles offset-aware strings
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
@@ -112,7 +107,6 @@ def _parse_csv_timestamp(value: str) -> Optional[datetime]:
         return dt
     except ValueError:
         pass
-    # Fallback for bare dates
     try:
         dt = datetime.strptime(value, "%Y-%m-%d")
         return dt.replace(tzinfo=timezone.utc)
@@ -161,98 +155,97 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
 
     last_dt = _parse_stored_time(last_time)
 
-    # Stream the file directly rather than reading it all into memory first,
-    # which would create a full second copy as an io.StringIO buffer.
     try:
-        f = path.open(encoding="utf-8-sig")
+        content = path.read_text(encoding="utf-8-sig")
     except Exception as exc:
         result.errors.append(f"Could not read file '{path.name}': {exc}")
         return result
 
-    with f:
-        try:
-            reader = csv.DictReader(f)
-        except Exception as exc:
-            result.errors.append(f"Failed to parse CSV '{path.name}': {exc}")
-            return result
+    try:
+        reader = csv.DictReader(io.StringIO(content))
+    except Exception as exc:
+        result.errors.append(f"Failed to parse CSV '{path.name}': {exc}")
+        return result
 
-        if not reader.fieldnames:
-            result.errors.append(f"'{path.name}' has no header row.")
-            return result
+    if not reader.fieldnames:
+        result.errors.append(f"'{path.name}' has no header row.")
+        return result
 
-        # Normalise header lookup (case-insensitive).
-        # Guard against None entries that malformed CSV files can produce.
-        headers_lower = {
-            h.strip().lower(): h.strip()
-            for h in reader.fieldnames
-            if h is not None
-        }
+    # Normalise header lookup (case-insensitive)
+    headers_lower = {h.strip().lower(): h.strip() for h in reader.fieldnames}
 
-        def col(name: str) -> Optional[str]:
-            return headers_lower.get(name.lower())
+    def col(name: str) -> Optional[str]:
+        return headers_lower.get(name.lower())
 
-        time_col  = col("start time")
-        usage_col = col("usage")
-        type_col  = col("type")
+    time_col  = col("start time")
+    usage_col = col("usage")
+    type_col  = col("type")
 
-        if not time_col:
-            result.errors.append(
-                f"'{path.name}': missing 'Start Time' column. "
-                f"Found headers: {list(reader.fieldnames)}"
-            )
-            return result
-        if not usage_col:
-            result.errors.append(
-                f"'{path.name}': missing 'Usage' column. "
-                f"Found headers: {list(reader.fieldnames)}"
-            )
-            return result
-
-        _LOGGER.debug(
-            "[%s] CSV columns — time: '%s', usage: '%s', type: '%s'",
-            path.name, time_col, usage_col, type_col,
+    if not time_col:
+        result.errors.append(
+            f"'{path.name}': missing 'Start Time' column. "
+            f"Found headers: {list(reader.fieldnames)}"
         )
+        return result
+    if not usage_col:
+        result.errors.append(
+            f"'{path.name}': missing 'Usage' column. "
+            f"Found headers: {list(reader.fieldnames)}"
+        )
+        return result
 
-        for row in reader:
-            # Filter by service type if the Type column exists
-            if type_col:
-                row_type = (row.get(type_col) or "").strip().lower()
-                if row_type and row_type != service_type.lower():
-                    result.rows_skipped += 1
-                    continue
+    _LOGGER.debug(
+        "[%s] CSV columns — time: '%s', usage: '%s', type: '%s'",
+        path.name, time_col, usage_col, type_col,
+    )
 
-            raw_time  = (row.get(time_col)  or "").strip()
-            raw_usage = (row.get(usage_col) or "").strip()
-
-            if not raw_time:
+    for row in reader:
+        # Filter by service type if the Type column exists
+        if type_col:
+            row_type = (row.get(type_col) or "").strip().lower()
+            if row_type and row_type != service_type.lower():
                 result.rows_skipped += 1
                 continue
 
-            row_dt = _parse_csv_timestamp(raw_time)
-            if row_dt is None:
-                _LOGGER.debug("[%s] Unparseable timestamp: '%s'", path.name, raw_time)
-                result.rows_skipped += 1
-                continue
+        raw_time  = (row.get(time_col)  or "").strip()
+        raw_usage = (row.get(usage_col) or "").strip()
 
-            # Skip already-imported rows
-            if last_dt is not None and row_dt <= last_dt:
-                result.rows_skipped += 1
-                continue
+        if not raw_time:
+            result.rows_skipped += 1
+            continue
 
-            try:
-                usage = float(raw_usage.replace(",", ""))
-            except (ValueError, AttributeError):
-                _LOGGER.debug("[%s] Non-numeric usage: '%s'", path.name, raw_usage)
-                result.rows_skipped += 1
-                continue
+        row_dt = _parse_csv_timestamp(raw_time)
+        if row_dt is None:
+            _LOGGER.debug("[%s] Unparseable timestamp: '%s'", path.name, raw_time)
+            result.rows_skipped += 1
+            continue
 
-            result.new_usage     += usage
-            result.rows_imported += 1
-            result.hourly_readings.append((row_dt, usage))
+        # Skip already-imported rows
+        if last_dt is not None and row_dt <= last_dt:
+            result.rows_skipped += 1
+            continue
 
-            stored = row_dt.strftime(_STORAGE_FMT)
-            if not result.newest_time or stored > result.newest_time:
-                result.newest_time = stored
+        try:
+            usage = float(raw_usage.replace(",", ""))
+        except (ValueError, AttributeError):
+            _LOGGER.debug("[%s] Non-numeric usage: '%s'", path.name, raw_usage)
+            result.rows_skipped += 1
+            continue
+
+        # Skip negative or zero usage — these are utility correction rows
+        # that would corrupt the cumulative sum if accepted.
+        if usage <= 0:
+            _LOGGER.debug("[%s] Skipping non-positive usage %.4f at %s", path.name, usage, row_dt)
+            result.rows_skipped += 1
+            continue
+
+        result.new_usage  += usage
+        result.rows_imported += 1
+        result.hourly_readings.append((row_dt, usage))
+
+        stored = row_dt.strftime(STORAGE_TIME_FMT)
+        if not result.newest_time or stored > result.newest_time:
+            result.newest_time = stored
 
     _LOGGER.info(
         "[%s] CSV %s: %d rows imported (%.4f units), %d skipped.",
@@ -301,11 +294,6 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
 
     root = tree.getroot()
 
-    # Handle both bare ESPI namespace and Atom feed wrapper
-    # RG&E may emit either:
-    #   <feed xmlns="http://www.w3.org/2005/Atom" xmlns:espi="http://naesb.org/espi">
-    #   <feed xmlns="http://naesb.org/espi">
-    # In both cases iter(espi("tag")) finds the elements correctly.
     def espi(tag: str) -> str:
         return f"{{{_ESPI_NS}}}{tag}"
 
@@ -332,7 +320,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
 
     # ── Read ReadingType: powerOfTenMultiplier and uom ───────────────────────
     power_of_ten: Optional[int] = None
-    uom: int = _UOM_WH        # safe default; overridden below
+    uom: Optional[int] = None
 
     for rt in root.iter(espi("ReadingType")):
         pot_el = rt.find(espi("powerOfTenMultiplier"))
@@ -349,9 +337,15 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
                 pass
         break  # only need the first ReadingType
 
-    # If powerOfTenMultiplier was missing, default based on uom:
-    # uom=72 (Wh): RG&E always uses -3, giving milli-Wh values
-    # uom=169 (therms): RG&E always uses -3, giving milli-therms values
+    # If uom is missing entirely, infer from service_type rather than blindly
+    # defaulting to electric/Wh, which would produce wildly wrong values for gas.
+    if uom is None:
+        uom = _UOM_WH if service_type.lower() == "electric" else _UOM_THERMS
+        _LOGGER.warning(
+            "[%s] uom not found in ReadingType — inferred %d from service_type='%s'.",
+            path.name, uom, service_type,
+        )
+
     if power_of_ten is None:
         power_of_ten = -3
         _LOGGER.warning(
@@ -417,11 +411,17 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
+        # Skip negative or zero usage — utility correction rows
+        if usage <= 0:
+            _LOGGER.debug("[%s] Skipping non-positive usage %.4f at %s", path.name, usage, row_dt)
+            result.rows_skipped += 1
+            continue
+
         result.new_usage     += usage
         result.rows_imported += 1
         result.hourly_readings.append((row_dt, usage))
 
-        stored = row_dt.strftime(_STORAGE_FMT)
+        stored = row_dt.strftime(STORAGE_TIME_FMT)
         if not result.newest_time or stored > result.newest_time:
             result.newest_time = stored
 
