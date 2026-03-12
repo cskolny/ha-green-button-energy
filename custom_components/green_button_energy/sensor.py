@@ -285,7 +285,12 @@ class GreenButtonSensor(SensorEntity):
                 db_boundary = last_start
 
                 window_start = earliest_dt - _OVERLAP_LOOKBACK
-                window_end   = earliest_dt + timedelta(seconds=1)
+                # Use +1 hour (not +1 second) so statistics_during_period
+                # reliably returns the stat at earliest_dt - 1h regardless
+                # of how HA rounds its inclusive window boundaries.
+                # The r_dt < earliest_dt filter below still excludes any
+                # stat AT earliest_dt from being used as the baseline.
+                window_end   = earliest_dt + timedelta(hours=1)
 
                 pre_stats = await get_instance(self.hass).async_add_executor_job(
                     statistics_during_period,

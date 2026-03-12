@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-12
+
+### Fixed
+- **Negative consumption values on overlap imports** — the overlap baseline
+  query window (`statistics_during_period`) used `window_end = earliest_dt +
+  1 second`, which was too narrow. Because `statistics_during_period` uses
+  inclusive boundaries and HA stores hourly stats on the hour, a 1-second
+  window could return no results. When the `before` list came back empty,
+  `running_sum` silently reset to 0, causing all newly-written cumulative sums
+  to be far below the values already in the database. The Energy Dashboard
+  interpreted the difference as a large negative consumption value at the day
+  boundary where old and new data met.
+
+  Fix: widened `window_end` to `earliest_dt + timedelta(hours=1)`. The
+  existing `r_dt < earliest_dt` filter still ensures the stat at `earliest_dt`
+  itself is never used as the baseline — only the stat strictly before it.
+
 ## [1.1.0] - 2026-03-10
 
 ### Added
