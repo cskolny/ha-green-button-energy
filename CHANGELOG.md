@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-13
+
+### Fixed
+- **Negative consumption values — definitive root cause fix** in `_import_statistics`.
+
+  **Root cause (all versions through v1.2):** The Energy Dashboard computes
+  hourly consumption as `sum[N] - sum[N-1]`. A negative value means the
+  cumulative sum *decreased* between two consecutive hours. This always happens
+  when those two hours were written by **different import chains** that used
+  different baselines — even a difference of a single Wh is enough. Every
+  previous attempt to fix this (overlap detection, `statistics_during_period`
+  window queries, `db_boundary` clipping) still allowed partial overwrites of
+  existing DB rows, which always left a seam between the overwritten region and
+  the rows that followed it.
+
+  **The invariant that must hold:** every new row written must directly follow
+  the *current last row in the DB*, using that row's cumulative sum as the
+  baseline. No row whose timestamp already exists in the DB may be overwritten.
+
+  **Fix:** `_import_statistics` now:
+
+  1. Calls `get_last_statistics` to find the current end of the DB chain —
+     its timestamp (`last_stat_dt`) and cumulative sum.
+  2. Discards any incoming row whose timestamp is ≤ `last_stat_dt`. Those rows
+     already exist in the DB (from a previous import of a longer file or from
+     a live sensor). Overwriting them would break the chain that follows them.
+  3. Writes only rows with timestamp > `last_stat_dt`, appending from
+     `last_stat_dt`'s sum as the baseline.
+
+  This reduces to one unified code path that is correct in every scenario:
+  - **First import:** no last stat → baseline 0, all rows written.
+  - **Normal append:** last stat = end of previous import → all new rows
+    written directly from that sum.
+  - **File covers already-imported range:** all rows ≤ last_stat_dt, nothing
+    written, import reports "no new data".
+  - **DB has data beyond stored_last_time** (prior longer file or live sensor):
+    rows ≤ last_stat_dt discarded, only genuinely new rows written from the
+    true end of the existing chain.
+
+  The old overlap detection branch, `statistics_during_period` window query,
+  `_OVERLAP_LOOKBACK` constant, `db_boundary` variable, and stored-total
+  baseline logic are all removed. The new implementation is ~60 lines vs ~90.
+
+### Changed
+- `_import_statistics` signature simplified: no longer takes `stored_last_time`
+  as a parameter — it uses `get_last_statistics` as the sole source of truth
+  for where the DB chain ends.
+- Success notification label changed from "Rows clipped" to "Rows skipped
+  (already in DB)" to more accurately describe what happened.
+- Dead constants `CONF_ELECTRIC_KEYWORD`, `CONF_GAS_KEYWORD`, and
+  `UNIT_CLASS_MAP` removed from `const.py`.
+
 ## [1.2.0] - 2026-03-12
 
 ### Fixed
