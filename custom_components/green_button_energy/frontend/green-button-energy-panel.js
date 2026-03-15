@@ -378,12 +378,12 @@ class GreenButtonEnergyPanel extends HTMLElement {
       });
 
       if (response.success) {
-        if (response.rows_imported === 0) {
+        if (response.rows_written === 0) {
           this._addResult({
             type: "warning",
             filename: file.name,
             serviceType,
-            message: "File processed — no new data found (already up to date).",
+            message: "No new data — file is already fully imported (all rows already in the database).",
             stats: response,
           });
         } else {
@@ -455,10 +455,10 @@ class GreenButtonEnergyPanel extends HTMLElement {
     list.innerHTML = this._results
       .map((r) => {
         const statsHtml =
-          r.stats && r.stats.rows_imported > 0
+          r.stats && r.stats.rows_written > 0
             ? `
             <div style="margin-top:6px">
-              <span class="stat">📥 ${r.stats.rows_imported} rows</span>
+              <span class="stat">📥 ${r.stats.rows_written} rows written</span>
               <span class="stat">📊 ${r.stats.new_usage?.toFixed(4)} ${r.stats.unit}</span>
               <span class="stat">🕐 through ${r.stats.newest_time || "—"}</span>
             </div>`

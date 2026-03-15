@@ -182,11 +182,13 @@ async def ws_handle_import_file(
     try:
         await sensor.async_process_file(tmp_path)
         result = sensor.last_result
+        rows_written = sensor.last_rows_written
 
         if result is None:
             connection.send_result(msg_id, {
                 "success": True,
                 "rows_imported": 0,
+                "rows_written": 0,
                 "new_usage": 0.0,
                 "unit": sensor.native_unit_of_measurement,
                 "newest_time": "",
@@ -196,13 +198,26 @@ async def ws_handle_import_file(
                 "success": False,
                 "error": "; ".join(result.errors),
                 "rows_imported": result.rows_imported,
+                "rows_written": 0,
                 "rows_skipped": result.rows_skipped,
+                "unit": sensor.native_unit_of_measurement,
+            })
+        elif rows_written == 0:
+            # Parser found rows but none were new enough to write —
+            # file is fully covered by existing DB data.
+            connection.send_result(msg_id, {
+                "success": True,
+                "rows_imported": result.rows_imported,
+                "rows_written": 0,
+                "new_usage": 0.0,
+                "newest_time": result.newest_time,
                 "unit": sensor.native_unit_of_measurement,
             })
         else:
             connection.send_result(msg_id, {
                 "success": True,
                 "rows_imported": result.rows_imported,
+                "rows_written": rows_written,
                 "rows_skipped": result.rows_skipped,
                 "new_usage": round(result.new_usage, 4),
                 "newest_time": result.newest_time,

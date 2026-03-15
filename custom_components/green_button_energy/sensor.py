@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.components.recorder import get_instance
@@ -134,6 +134,7 @@ class GreenButtonSensor(SensorEntity):
         self._attr_native_value: float = float(data.get(total_key, 0.0))
         self._processing_lock = asyncio.Lock()
         self.last_result: ParseResult | None = None
+        self.last_rows_written: int = 0   # rows actually committed to DB on last import
 
     async def async_update(self) -> None:
         """Refresh state from stored data (called once at startup)."""
@@ -146,9 +147,9 @@ class GreenButtonSensor(SensorEntity):
         Uses async_import_statistics so every hourly reading gets its correct
         past timestamp in the Energy Dashboard.
         """
-        # Reset last_result so callers never see stale data from a prior import
-        # if this call raises before completing.
+        # Reset both so callers never see stale data from a prior import.
         self.last_result = None
+        self.last_rows_written = 0
 
         async with self._processing_lock:
             last_time: str = self._data.get(self._time_key, "")
@@ -178,9 +179,10 @@ class GreenButtonSensor(SensorEntity):
                 return
 
             rows_written, written_usage, newest_written = await self._import_statistics(result)
+            self.last_rows_written = rows_written
 
             if rows_written == 0:
-                # All rows were filtered out — nothing new was written to the DB.
+                # All rows were clipped — nothing new was written to the DB.
                 # Do not advance last_time or update the running total.
                 return
 
@@ -192,75 +194,53 @@ class GreenButtonSensor(SensorEntity):
             await self._store.async_save(self._data)
 
             self._attr_native_value = self._data[self._total_key]
-            self.async_write_ha_state()
+            # NOTE: async_write_ha_state() is intentionally NOT called here.
+            # Calling it causes HA's recorder to write a stat for this entity
+            # at the current hour's timestamp. That stat then poisons
+            # get_last_statistics, causing all rows in the next import file
+            # (which cover historical dates) to be discarded as "already in DB".
+            # Since this integration has no live sensor there is no benefit to
+            # updating HA state here, and significant harm in doing so.
 
-            rows_skipped = result.rows_imported - rows_written
             _LOGGER.info(
-                "[%s] Imported %.4f %s (%d rows written, %d skipped) from '%s'. Total: %.4f.",
+                "[%s] Imported %.4f %s (%d rows written) from '%s'. Total: %.4f.",
                 self._attr_name,
                 written_usage,
                 self._attr_native_unit_of_measurement,
                 rows_written,
-                rows_skipped,
                 Path(file_path).name,
                 self._attr_native_value,
             )
 
-            self._send_success_notification(
-                file_path, written_usage, rows_written, rows_skipped, newest_written
-            )
+            self._send_success_notification(file_path, written_usage, rows_written, newest_written)
 
     async def _import_statistics(self, result: ParseResult) -> tuple[int, float, str]:
         """
         Write hourly readings as long-term statistics into the recorder.
 
-        ── The invariant that prevents negative consumption values ─────────────
+        ── Why we use stored last_time, not get_last_statistics ────────────────
 
-        The Energy Dashboard computes hourly consumption as sum[N] - sum[N-1].
-        A negative value means sum[N] < sum[N-1], i.e. the cumulative sum
-        decreased. This happens whenever two consecutive rows in the DB were
-        written by DIFFERENT import chains that used different baselines.
+        After every successful import, async_write_ha_state() updates the
+        sensor's state in HA.  HA's recorder observes this state change and
+        writes its own stat for the entity at the CURRENT hour's timestamp —
+        even though this integration has no live sensor.  If we then use
+        get_last_statistics to find the baseline, it returns that recorder-
+        written stat at TODAY, causing every row in the next import file
+        (which covers historical dates) to be discarded as "already in the DB".
 
-        The only guarantee against this is: every row we write must directly
-        follow the last row already in the DB, using that row's sum as the
-        baseline.  We never write a row whose timestamp already exists in the
-        DB (that would overwrite it with a potentially different sum), and we
-        never write a row that would be followed by an existing row whose sum
-        was computed from a different baseline.
+        The fix: use the stored last_import_time from .storage as the true
+        boundary.  That value is only ever written by us, after a confirmed
+        successful write to the recorder.  It accurately reflects the last
+        row we actually imported — recorder-written live stats are invisible
+        to it.
 
-        ── How this is achieved ────────────────────────────────────────────────
+        ── Algorithm ───────────────────────────────────────────────────────────
 
-        1.  The parser already skipped rows at or before stored_last_time, so
-            every row in hourly_readings is genuinely new to us.
+        The parser has already skipped all rows <= stored last_import_time,
+        so every row in hourly_readings is genuinely new.
 
-        2.  We call get_last_statistics to find the current end of the DB chain:
-            its timestamp (last_stat_dt) and cumulative sum (last_stat_sum).
-
-        3.  Any row in hourly_readings whose timestamp is ≤ last_stat_dt already
-            exists in the DB — it was written by a previous import of a file
-            that covered a longer range, or by a live sensor.  Writing it again
-            would overwrite its sum with a value from our chain, splitting the
-            existing chain and creating a seam.  We discard those rows.
-
-        4.  We keep only rows with timestamp > last_stat_dt.  These truly follow
-            the end of the DB chain.  We use last_stat_sum as our baseline and
-            append from there.
-
-        5.  If no rows survive this filter (the file contained no data newer
-            than what's already in the DB), we return without writing anything.
-
-        This reduces to two cases with unified handling:
-
-          Normal append (no other data beyond stored_last_time):
-            last_stat_dt == stored_last_time
-            All hourly_readings rows have dt > stored_last_time > last_stat_dt
-            → all rows kept, baseline = last_stat_sum ✓
-
-          Other data exists beyond stored_last_time (prior longer import or live sensor):
-            last_stat_dt > stored_last_time
-            Rows with dt ≤ last_stat_dt are discarded (already in DB)
-            Rows with dt > last_stat_dt are truly new and follow the chain end
-            baseline = last_stat_sum (end of the existing chain) ✓
+        We use get_last_statistics solely to get the cumulative sum baseline
+        (the kWh total to continue from), not to make any filtering decisions.
 
         Returns:
             (rows_written, written_usage, newest_written_time)
@@ -271,7 +251,8 @@ class GreenButtonSensor(SensorEntity):
 
         sorted_readings = sorted(result.hourly_readings, key=lambda x: x[0])
 
-        # ── Find the current end of the DB chain ──────────────────────────────
+        # ── Get the cumulative sum baseline ───────────────────────────────────
+        # We only use this for its sum value, never for filtering decisions.
         last_stats = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics,
             self.hass,
@@ -281,53 +262,20 @@ class GreenButtonSensor(SensorEntity):
             {"sum"},
         )
 
-        last_stat_dt: datetime | None = None
-        running_sum: float = 0.0
-
+        running_sum = 0.0
         if last_stats and self.entity_id in last_stats:
             last = last_stats[self.entity_id][0]
-
-            # HA 2026.x returns start as a datetime; older versions return an
-            # epoch float. Handle both to stay compatible across HA versions.
-            start_val = last["start"]
-            if isinstance(start_val, datetime):
-                last_stat_dt = (
-                    start_val if start_val.tzinfo else start_val.replace(tzinfo=timezone.utc)
-                )
-            else:
-                last_stat_dt = datetime.fromtimestamp(float(start_val), tz=timezone.utc)
-
             running_sum = float(last.get("sum") or 0.0)
-
             _LOGGER.debug(
-                "[%s] DB chain ends at %s with sum=%.4f.",
-                self._attr_name, last_stat_dt, running_sum,
+                "[%s] Baseline sum=%.4f (from last stat in DB)",
+                self._attr_name, running_sum,
             )
         else:
-            _LOGGER.debug("[%s] First import — no existing stats, baseline sum=0.", self._attr_name)
-
-        # ── Discard rows already covered by the DB chain ──────────────────────
-        #
-        # Any row whose timestamp is ≤ last_stat_dt already exists in the DB.
-        # Writing it would overwrite its sum and break the chain that follows.
-        if last_stat_dt is not None:
-            before = len(sorted_readings)
-            sorted_readings = [(dt, u) for dt, u in sorted_readings if dt > last_stat_dt]
-            discarded = before - len(sorted_readings)
-            if discarded:
-                _LOGGER.debug(
-                    "[%s] Discarded %d row(s) already present in DB chain (≤ %s).",
-                    self._attr_name, discarded, last_stat_dt,
-                )
+            _LOGGER.debug("[%s] First import — no existing stats, baseline=0.", self._attr_name)
 
         if not sorted_readings:
-            _LOGGER.info(
-                "[%s] No rows newer than the current DB chain end (%s) — nothing to write.",
-                self._attr_name, last_stat_dt,
-            )
             return 0, 0.0, result.newest_time
 
-        # ── Append new rows to the end of the DB chain ────────────────────────
         statistic_data: list[StatisticData] = []
         for dt_utc, usage in sorted_readings:
             running_sum = round(running_sum + usage, 6)
@@ -339,9 +287,7 @@ class GreenButtonSensor(SensorEntity):
                 )
             )
 
-        unit_class = (
-            "energy" if self._attr_native_unit_of_measurement == UNIT_ELECTRIC else "volume"
-        )
+        unit_class = "energy" if self._attr_native_unit_of_measurement == UNIT_ELECTRIC else "volume"
 
         metadata = StatisticMetaData(
             has_mean=False,
@@ -354,12 +300,11 @@ class GreenButtonSensor(SensorEntity):
             unit_of_measurement=self._attr_native_unit_of_measurement,
         )
 
+        first_sum = statistic_data[0]["sum"]
+        last_sum  = statistic_data[-1]["sum"]
         _LOGGER.info(
             "[%s] Writing %d statistics (sum %.4f → %.4f %s).",
-            self._attr_name,
-            len(statistic_data),
-            statistic_data[0]["sum"],
-            statistic_data[-1]["sum"],
+            self._attr_name, len(statistic_data), first_sum, last_sum,
             self._attr_native_unit_of_measurement,
         )
 
@@ -374,15 +319,9 @@ class GreenButtonSensor(SensorEntity):
         file_path: str,
         written_usage: float,
         rows_written: int,
-        rows_skipped: int,
         newest_written: str,
     ) -> None:
         """Show a persistent notification on successful import."""
-        skipped_note = (
-            f"\n⚠️ Rows skipped (already in DB): {rows_skipped}"
-            if rows_skipped > 0
-            else ""
-        )
         pn_create(
             self.hass,
             message=(
@@ -392,7 +331,6 @@ class GreenButtonSensor(SensorEntity):
                 f"📊 New usage: {written_usage:.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🔢 Running total: {self._attr_native_value:.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🕐 Data through: {newest_written}"
-                f"{skipped_note}"
             ),
             title="Avangrid Green Button — Import Successful",
             notification_id=f"{NOTIF_SUCCESS}_{self._attr_unique_id}",

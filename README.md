@@ -129,6 +129,8 @@ The **Green Button Import** panel will appear in your sidebar immediately after 
 3. Under **Gas consumption** → **Add gas source** → select `Avangrid Gas Total`
 4. Click **Save**
 
+> **Note:** In the Gas consumption picker, both `Avangrid Electric Total` and `Avangrid Gas Total` will appear as options. This is a quirk of HA's Energy Dashboard UI — it lists all `total_increasing` sensors regardless of device class. Make sure to select `Avangrid Gas Total` here. Selecting the electric sensor in the gas section would produce incorrect readings.
+
 ---
 
 ## Usage
@@ -289,6 +291,9 @@ This can happen if data imported with v1.0.0 overlaps with live sensor stats. Fo
 
 ### Sensor doesn't appear in Energy Dashboard gas section
 Verify in **Developer Tools → States** that `sensor.avangrid_gas_total` shows `device_class: gas` and `unit_of_measurement: CCF`.
+
+### Avangrid Electric Total appears as an option in the Gas consumption picker
+This is expected behavior — HA's Energy Dashboard configuration UI lists all `total_increasing` sensors in every section picker, regardless of `device_class`. It is not a bug in the integration. Simply select `Avangrid Gas Total` in the gas section and ignore the electric sensor appearing there. The electric sensor will only cause problems if you accidentally select it in the gas section.
 
 ### "Connection error" when dropping a file
 Check **Settings → System → Logs** and filter for `green_button_energy`. Common causes: integration not fully loaded, file is not valid UTF-8, or HA WebSocket connection dropped — refresh the browser and try again.

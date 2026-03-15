@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-03-15
+
+### Fixed
+- **Every import after the first silently wrote 0 rows** — the root cause of
+  the recurring "data stops at the previous file's last date" problem.
+
+  After each successful import, `async_write_ha_state()` was called to update
+  the sensor's state in HA. Even though this integration has no live sensor,
+  HA's recorder observes every state change on a `TOTAL_INCREASING` entity and
+  writes its own stat at the **current hour's timestamp**. On the next import,
+  `get_last_statistics` returned that recorder-written stat timestamped *today*,
+  not the last row our import actually wrote. The import code then discarded
+  every row in the new file as "already in the DB chain" — because all
+  historical rows predate today. Result: 0 rows written, no persistent
+  notification, no storage update, and re-importing the same file repeatedly
+  reported "N rows" without ever writing anything.
+
+  This did not affect imports done in rapid succession within the same clock
+  hour (e.g. uploading all historical months in one sitting), because HA's
+  recorder had not yet committed the live stat before the next import ran.
+  It only manifested when returning hours or days later — exactly the normal
+  weekly workflow.
+
+  Fix: removed `async_write_ha_state()` entirely. This integration has no live
+  sensor and there is no benefit to updating HA state after an import.
+  `get_last_statistics` is now used solely to retrieve the cumulative sum
+  baseline (the kWh total to continue from), never to make filtering decisions.
+
+### Fixed
+- **Import panel falsely reported parser row count instead of rows written** —
+  the WebSocket response was built from `result.rows_imported` (rows the parser
+  found in the file) regardless of how many were actually committed to the
+  database. When 0 rows were written due to the bug above, the panel still
+  showed "48 rows" with a success card, giving no indication anything was wrong.
+
+  Fix: `rows_written` (rows actually committed to the DB) is now threaded from
+  `_import_statistics` back through `async_process_file` and the WebSocket
+  handler to the panel. The panel now shows `rows_written` in the success card
+  and displays a clear ⚠️ warning — "No new data — file is already fully
+  imported" — when `rows_written === 0`, even if the parser found rows.
+
 ## [1.3.0] - 2026-03-13
 
 ### Fixed
