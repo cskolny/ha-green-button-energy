@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.components.recorder import get_instance
@@ -27,7 +27,7 @@ from homeassistant.components.recorder.statistics import (
     async_import_statistics,
     get_last_statistics,
 )
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -111,8 +111,16 @@ class GreenButtonSensor(SensorEntity):
     """
 
     _attr_should_poll = False
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_has_entity_name = False
+    # NOTE: _attr_state_class is intentionally NOT set.
+    # Setting state_class=TOTAL_INCREASING causes HA's recorder hourly job to
+    # write a stat for this entity at the top of every hour using the sensor's
+    # current state machine value. Since we never call async_write_ha_state(),
+    # that value is always the startup value (0 on a fresh install). The recorder
+    # then writes sum=0 at today's hour, creating a massive negative spike where
+    # the historical chain (~5500 kWh) meets that rogue stat 30-60 minutes after
+    # a successful import. Without state_class the recorder ignores this entity
+    # entirely. async_import_statistics and the Energy Dashboard do not need it.
 
     def __init__(
         self,
