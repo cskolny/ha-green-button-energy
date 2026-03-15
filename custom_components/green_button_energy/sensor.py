@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
 from homeassistant.components.recorder import get_instance
@@ -90,7 +90,13 @@ async def async_setup_entry(
         unique_id=SENSOR_GAS_UID,
     )
 
-    async_add_entities([electric_sensor, gas_sensor], update_before_add=True)
+    # NOTE: update_before_add is intentionally omitted (defaults to False).
+    # Passing True causes HA to call async_update() then async_write_ha_state()
+    # at startup — even though we never call async_write_ha_state() ourselves.
+    # That state write causes HA's recorder to write a stat at the current hour
+    # with sum=stored_total, poisoning the DB chain and creating a negative spike
+    # in the Energy Dashboard the next time historical data is imported.
+    async_add_entities([electric_sensor, gas_sensor])
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "electric": electric_sensor,
@@ -135,10 +141,6 @@ class GreenButtonSensor(SensorEntity):
         self._processing_lock = asyncio.Lock()
         self.last_result: ParseResult | None = None
         self.last_rows_written: int = 0   # rows actually committed to DB on last import
-
-    async def async_update(self) -> None:
-        """Refresh state from stored data (called once at startup)."""
-        self._attr_native_value = float(self._data.get(self._total_key, 0.0))
 
     async def async_process_file(self, file_path: str) -> None:
         """

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-03-15
+
+### Fixed
+- **Negative consumption spike appearing ~30–60 minutes after a fresh import**
+  — the last remaining pathway for HA's recorder to write a poisoning stat.
+
+  `async_add_entities(..., update_before_add=True)` causes HA's entity platform
+  to call `async_update()` on each sensor at startup, and then automatically
+  call `async_write_ha_state()` after it returns — even though the integration
+  never calls `async_write_ha_state()` explicitly. That state write is observed
+  by HA's recorder, which writes a stat for the entity at the **current hour's
+  timestamp** with `sum = stored_total`. On a fresh install (after clearing all
+  data), `stored_total = 0`, so a stat with `sum = 0` is written at today's
+  hour. The import then correctly writes thousands of historical rows with sums
+  climbing to ~5500 kWh. At the end of the clock hour HA commits the aggregate,
+  leaving `sum = 0` sitting in the DB at today's hour. The Energy Dashboard
+  computes `0 - 5500 = -5500 kWh` at that hour — a massive negative spike
+  that appears 30–60 minutes after a successful import.
+
+  Fix: removed `update_before_add=True` from `async_add_entities()`. Also
+  removed the `async_update()` method entirely — it was redundant since
+  `__init__` already sets `_attr_native_value` from stored data, and keeping
+  it was misleading given that `_attr_should_poll = False` means HA never
+  calls it after startup anyway.
+
+  This eliminates all remaining pathways for HA's recorder to write a live
+  stat for this entity.
+
 ## [1.4.0] - 2026-03-15
 
 ### Fixed
