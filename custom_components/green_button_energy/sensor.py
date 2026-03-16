@@ -27,7 +27,7 @@ from homeassistant.components.recorder.statistics import (
     async_import_statistics,
     get_last_statistics,
 )
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -111,16 +111,8 @@ class GreenButtonSensor(SensorEntity):
     """
 
     _attr_should_poll = False
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_has_entity_name = False
-    # NOTE: _attr_state_class is intentionally NOT set.
-    # Setting state_class=TOTAL_INCREASING causes HA's recorder hourly job to
-    # write a stat for this entity at the top of every hour using the sensor's
-    # current state machine value. Since we never call async_write_ha_state(),
-    # that value is always the startup value (0 on a fresh install). The recorder
-    # then writes sum=0 at today's hour, creating a massive negative spike where
-    # the historical chain (~5500 kWh) meets that rogue stat 30-60 minutes after
-    # a successful import. Without state_class the recorder ignores this entity
-    # entirely. async_import_statistics and the Energy Dashboard do not need it.
 
     def __init__(
         self,
@@ -145,7 +137,9 @@ class GreenButtonSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_name = name
         self._attr_unique_id = unique_id
-        self._attr_native_value: float = float(data.get(total_key, 0.0))
+        # None = unknown state: prevents HA recorder from writing hourly
+        # boundary stats that corrupt the Energy Dashboard statistics chain.
+        self._attr_native_value = None
         self._processing_lock = asyncio.Lock()
         self.last_result: ParseResult | None = None
         self.last_rows_written: int = 0   # rows actually committed to DB on last import
@@ -203,14 +197,7 @@ class GreenButtonSensor(SensorEntity):
             self._data[LAST_FILE_KEY] = Path(file_path).name
             await self._store.async_save(self._data)
 
-            self._attr_native_value = self._data[self._total_key]
-            # NOTE: async_write_ha_state() is intentionally NOT called here.
-            # Calling it causes HA's recorder to write a stat for this entity
-            # at the current hour's timestamp. That stat then poisons
-            # get_last_statistics, causing all rows in the next import file
-            # (which cover historical dates) to be discarded as "already in DB".
-            # Since this integration has no live sensor there is no benefit to
-            # updating HA state here, and significant harm in doing so.
+            # native_value stays None — do not update sensor state.
 
             _LOGGER.info(
                 "[%s] Imported %.4f %s (%d rows written) from '%s'. Total: %.4f.",
@@ -339,7 +326,7 @@ class GreenButtonSensor(SensorEntity):
                 f"📄 File: `{Path(file_path).name}`\n"
                 f"✅ Rows written: {rows_written}\n"
                 f"📊 New usage: {written_usage:.4f} {self._attr_native_unit_of_measurement}\n"
-                f"🔢 Running total: {self._attr_native_value:.4f} {self._attr_native_unit_of_measurement}\n"
+                f"🔢 Running total: {self._data.get(self._total_key, 0.0):.4f} {self._attr_native_unit_of_measurement}\n"
                 f"🕐 Data through: {newest_written}"
             ),
             title="Avangrid Green Button — Import Successful",
