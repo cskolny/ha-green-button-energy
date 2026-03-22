@@ -44,3 +44,4 @@ class GreenButtonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             title="Green Button Energy Import",
             data={},
         )
+        
