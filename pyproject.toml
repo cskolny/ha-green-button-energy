@@ -23,6 +23,12 @@ ignore = [
   "ANN401",  # Dynamically typed Any in return/param (used in sensor lookup)
 ]
 
+[tool.ruff.lint.isort]
+# Tell ruff's isort which packages are first-party so import grouping is correct.
+known-first-party = ["custom_components.green_button_energy"]
+# Consistent with black profile: one blank line between import sections.
+force-sort-within-sections = false
+
 [tool.black]
 line-length = 99
 target-version = ["py313"]
