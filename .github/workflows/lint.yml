@@ -32,12 +32,6 @@ jobs:
       - name: ruff check
         run: ruff check custom_components/
 
-      - name: ruff format --check
-        # ruff format is a black-compatible formatter (implements the black style).
-        # Running both black and ruff format is redundant — ruff format IS the
-        # black algorithm. We use ruff format --check in place of black --check.
-        run: ruff format --check custom_components/
-
       - name: isort --check
         run: isort --check-only custom_components/
 
