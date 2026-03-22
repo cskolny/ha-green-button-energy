@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint:
-    name: Ruff · Black · isort · mypy
+    name: Ruff · isort · mypy
     runs-on: ubuntu-latest
 
     steps:
@@ -22,15 +25,18 @@ jobs:
       - name: Install lint dependencies
         run: |
           pip install --upgrade pip
-          pip install ruff black isort mypy \
+          pip install ruff isort mypy \
             homeassistant \
             voluptuous
 
       - name: ruff check
         run: ruff check custom_components/
 
-      - name: black --check
-        run: black --check custom_components/
+      - name: ruff format --check
+        # ruff format is a black-compatible formatter (implements the black style).
+        # Running both black and ruff format is redundant — ruff format IS the
+        # black algorithm. We use ruff format --check in place of black --check.
+        run: ruff format --check custom_components/
 
       - name: isort --check
         run: isort --check-only custom_components/

@@ -176,11 +176,19 @@ class TestWsHandleImportFile:
         hass: HomeAssistant,
         msg: dict,
     ) -> MagicMock:
-        """Call the handler directly and return the mock connection."""
+        """Call the unwrapped handler directly and return the mock connection.
+
+        ``ws_handle_import_file`` is decorated with
+        ``@websocket_api.async_response``, which wraps the coroutine and
+        schedules it via ``hass.async_create_task``, returning ``None``
+        rather than a coroutine.  Awaiting ``None`` raises ``TypeError``.
+        ``.__wrapped__`` gives us the original coroutine function so we can
+        await it directly in tests.
+        """
         from custom_components.green_button_energy import ws_handle_import_file
 
         conn = _mock_connection()
-        await ws_handle_import_file(hass, conn, msg)
+        await ws_handle_import_file.__wrapped__(hass, conn, msg)
         await hass.async_block_till_done()
         return conn
 

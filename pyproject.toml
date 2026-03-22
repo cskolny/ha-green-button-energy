@@ -29,9 +29,8 @@ known-first-party = ["custom_components.green_button_energy"]
 # Consistent with black profile: one blank line between import sections.
 force-sort-within-sections = false
 
-[tool.black]
-line-length = 99
-target-version = ["py313"]
+# Formatting is handled by ruff format (black-compatible).
+# Configuration lives in [tool.ruff] above (line-length, target-version).
 
 [tool.isort]
 profile = "black"
