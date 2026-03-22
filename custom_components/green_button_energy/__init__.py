@@ -305,7 +305,7 @@ async def ws_handle_import_file(
         await hass.async_add_executor_job(os.unlink, tmp_path)
 
 
-def _find_sensor(hass: HomeAssistant, service_type: str) -> "GreenButtonSensor | None":
+def _find_sensor(hass: HomeAssistant, service_type: str) -> GreenButtonSensor | None:
     """Locate the :class:`~.sensor.GreenButtonSensor` for *service_type*.
 
     Searches ``hass.data[DOMAIN]`` for a config-entry dict that contains a
