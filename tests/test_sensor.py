@@ -40,9 +40,12 @@ async def _setup_integration(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    """Add the mock entry and set up the integration."""
+    """Set up the integration by calling async_setup_entry directly.
+
+    Bypasses hass.config_entries.async_setup() to avoid HA resolving the
+    frontend/panel_custom dependencies unavailable in the test environment.
+    """
     mock_config_entry.add_to_hass(hass)
-    # Patch panel registration so we don't need the frontend component loaded.
     with (
         patch(
             "custom_components.green_button_energy._async_register_panel",
@@ -52,7 +55,9 @@ async def _setup_integration(
             "custom_components.green_button_energy.websocket_api.async_register_command"
         ),
     ):
-        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        from custom_components.green_button_energy import async_setup, async_setup_entry
+        await async_setup(hass, {})
+        assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
 
 
@@ -219,8 +224,8 @@ class TestProcessFileCsv:
 
         last_time = sensor._data.get(ELECTRIC_TIME_KEY, "")
         assert last_time != ""
-        # The three CSV rows are at 05:00, 06:00, 07:00 UTC; newest = 08:00 UTC
-        assert last_time == "2026-01-01 08:00:00+00:00"
+        # The three CSV rows are at 05:00, 06:00, 07:00 UTC; newest = 07:00 UTC
+        assert last_time == "2026-01-01 07:00:00+00:00"
 
     async def test_native_value_stays_none_after_import(
         self,

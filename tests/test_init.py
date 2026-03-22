@@ -26,6 +26,13 @@ async def _setup_integration(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
 ) -> None:
+    """Set up the integration by calling async_setup_entry directly.
+
+    We bypass hass.config_entries.async_setup() to avoid HA trying to
+    resolve the frontend/panel_custom dependencies which are not available
+    in the test environment. We also call async_setup() first so the
+    WebSocket command is registered.
+    """
     mock_config_entry.add_to_hass(hass)
     with (
         patch(
@@ -36,7 +43,9 @@ async def _setup_integration(
             "custom_components.green_button_energy.websocket_api.async_register_command"
         ),
     ):
-        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        from custom_components.green_button_energy import async_setup, async_setup_entry
+        await async_setup(hass, {})
+        assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
 
 
@@ -78,12 +87,15 @@ class TestIntegrationLifecycle:
         mock_config_entry: MockConfigEntry,
     ) -> None:
         """_async_register_panel must only be called once even on reload."""
+        from custom_components.green_button_energy import async_setup, async_setup_entry
+
         call_count = 0
 
-        async def _fake_register(h):
+        async def _fake_register(h: HomeAssistant) -> None:
             nonlocal call_count
             call_count += 1
 
+        mock_config_entry.add_to_hass(hass)
         with (
             patch(
                 "custom_components.green_button_energy._async_register_panel",
@@ -93,8 +105,8 @@ class TestIntegrationLifecycle:
                 "custom_components.green_button_energy.websocket_api.async_register_command"
             ),
         ):
-            mock_config_entry.add_to_hass(hass)
-            await hass.config_entries.async_setup(mock_config_entry.entry_id)
+            await async_setup(hass, {})
+            await async_setup_entry(hass, mock_config_entry)
             await hass.async_block_till_done()
 
         assert call_count == 1

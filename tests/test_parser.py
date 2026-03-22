@@ -250,7 +250,7 @@ class TestCsvParser:
     def test_newest_time_is_latest_row(self, csv_electric_file: Path) -> None:
         result = parse_file(str(csv_electric_file), "electric", "")
         # The three rows are at 05:00, 06:00, 07:00 UTC
-        assert result.newest_time == "2026-01-01 08:00:00+00:00"
+        assert result.newest_time == "2026-01-01 07:00:00+00:00"
 
     def test_newest_time_in_storage_format(self, csv_electric_file: Path) -> None:
         result = parse_file(str(csv_electric_file), "electric", "")

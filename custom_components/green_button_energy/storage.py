@@ -89,4 +89,4 @@ async def load_store(hass: HomeAssistant) -> tuple[Store, dict[str, Any]]:
     store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     data: dict[str, Any] = await store.async_load() or {}
     _LOGGER.debug("[green_button_energy] Storage loaded: %s", data)
-    return store, data  
+    return store, data
