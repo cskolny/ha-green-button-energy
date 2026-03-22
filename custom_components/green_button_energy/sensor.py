@@ -61,7 +61,7 @@ from .const import (
     UNIT_ELECTRIC,
     UNIT_GAS,
 )
-from .parser import ParseResult, _STORAGE_FMT, parse_file
+from .parser import _STORAGE_FMT, ParseResult, parse_file
 from .storage import load_store
 
 _LOGGER = logging.getLogger(__name__)
