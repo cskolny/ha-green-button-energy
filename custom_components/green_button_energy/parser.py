@@ -244,13 +244,13 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
     if not time_col:
         result.errors.append(
             f"'{path.name}': missing 'Start Time' column. "
-            f"Found headers: {list(reader.fieldnames)}"
+            f"Found headers: {list(reader.fieldnames)}",
         )
         return result
     if not usage_col:
         result.errors.append(
             f"'{path.name}': missing 'Usage' column. "
-            f"Found headers: {list(reader.fieldnames)}"
+            f"Found headers: {list(reader.fieldnames)}",
         )
         return result
 
@@ -526,7 +526,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
     if readings_found == 0:
         result.errors.append(
             f"'{path.name}': no IntervalReading elements found. "
-            "Verify this is a valid Green Button ESPI XML export."
+            "Verify this is a valid Green Button ESPI XML export.",
         )
 
     _LOGGER.info(

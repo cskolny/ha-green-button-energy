@@ -125,7 +125,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
                 # after an integration update without requiring a hard refresh.
                 cache_headers=False,
             )
-        ]
+        ],
     )
 
     await panel_custom.async_register_panel(
@@ -153,7 +153,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         vol.Required("filename"): str,
         vol.Required("content"): str,
         vol.Required("service_type"): vol.In(["electric", "gas"]),
-    }
+    },
 )
 @websocket_api.async_response
 async def ws_handle_import_file(
