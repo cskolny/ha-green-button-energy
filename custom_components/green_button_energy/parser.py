@@ -29,11 +29,12 @@ Both parsers
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -115,14 +116,14 @@ def _parse_stored_time(value: str) -> datetime | None:
 
     try:
         dt = datetime.fromisoformat(value)
-        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
     except ValueError:
         pass
 
     # Fallback: handle legacy naive strings written by very old versions.
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(value, fmt).replace(tzinfo=UTC)
         except ValueError:
             continue
 
@@ -146,13 +147,13 @@ def _parse_csv_timestamp(value: str) -> datetime | None:
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
     except ValueError:
         pass
 
     try:
-        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError:
         pass
 
@@ -340,12 +341,12 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
     **Electric** (``ServiceCategory kind=0``, ``ReadingType uom=72`` / Wh)::
 
         value=938000, powerOfTenMultiplier=-3
-        → 938 000 × 10⁻³ = 938 Wh ÷ 1 000 = 0.938 kWh
+        -> 938 000 x 10^-3 = 938 Wh / 1 000 = 0.938 kWh
 
     **Gas** (``ServiceCategory kind=1``, ``ReadingType uom=169`` / therms)::
 
         value=702, powerOfTenMultiplier=-3
-        → 702 × 10⁻³ = 0.702 therms  (no extra ÷1 000 — already in therms)
+        -> 702 x 10^-3 = 0.702 therms  (no extra /1 000 -- already in therms)
 
     The unit conversion is read from ``ReadingType`` metadata and applied
     automatically, so both commodity types are handled correctly without any
@@ -354,7 +355,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
     Args:
         path: Path to the ``.xml`` file.
         service_type: ``"electric"`` or ``"gas"``.
-        last_time: UTC cutoff — readings at or before this timestamp are skipped.
+        last_time: UTC cutoff -- readings at or before this timestamp are skipped.
 
     Returns:
         A :class:`ParseResult` with accepted readings and diagnostics.
@@ -363,8 +364,8 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
     last_dt = _parse_stored_time(last_time)
 
     # ESPI uom codes relevant to Avangrid exports.
-    _UOM_WH = 72       # Wh  (electric) — needs ÷ 1 000 to produce kWh
-    _UOM_THERMS = 169  # therms (gas)   — powerOfTenMultiplier alone is sufficient
+    _UOM_WH = 72       # Wh  (electric) -- needs / 1 000 to produce kWh
+    _UOM_THERMS = 169  # therms (gas)   -- powerOfTenMultiplier alone is sufficient
 
     try:
         tree = ET.parse(str(path))
@@ -381,16 +382,14 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
         """Return a fully-qualified ESPI element name."""
         return f"{{{_ESPI_NS}}}{tag}"
 
-    # ── Detect commodity type from ServiceCategory/kind ───────────────────
+    # -- Detect commodity type from ServiceCategory/kind -------------------
     detected_kind: int | None = None
     for sc in root.iter(_espi("ServiceCategory")):
         kind_el = sc.find(_espi("kind"))
         if kind_el is not None and kind_el.text:
-            try:
+            with contextlib.suppress(ValueError):
                 detected_kind = int(kind_el.text.strip())
-            except ValueError:
-                pass
-            break  # Only the first ServiceCategory is needed.
+        break  # Only the first ServiceCategory is needed.
 
     _KIND_NAMES: dict[int, str] = {0: "electric", 1: "gas"}
     detected_service = (
@@ -409,7 +408,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
             service_type,
         )
 
-    # ── Read ReadingType: powerOfTenMultiplier and uom ────────────────────
+    # -- Read ReadingType: powerOfTenMultiplier and uom --------------------
     power_of_ten: int | None = None
     uom: int | None = None
 
@@ -417,24 +416,20 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
         pot_el = rt.find(_espi("powerOfTenMultiplier"))
         uom_el = rt.find(_espi("uom"))
         if pot_el is not None and pot_el.text:
-            try:
+            with contextlib.suppress(ValueError):
                 power_of_ten = int(pot_el.text.strip())
-            except ValueError:
-                pass
         if uom_el is not None and uom_el.text:
-            try:
+            with contextlib.suppress(ValueError):
                 uom = int(uom_el.text.strip())
-            except ValueError:
-                pass
         break  # Only the first ReadingType is needed.
 
     # If uom is absent, infer from service_type rather than defaulting to the
-    # electric conversion (Wh ÷ 1 000), which would produce values ~1 000×
+    # electric conversion (Wh / 1 000), which would produce values ~1 000x
     # too small for gas exports.
     if uom is None:
         uom = _UOM_WH if service_type.lower() == "electric" else _UOM_THERMS
         _LOGGER.warning(
-            "[%s] uom not found in ReadingType — inferred %d from service_type='%s'.",
+            "[%s] uom not found in ReadingType -- inferred %d from service_type='%s'.",
             path.name,
             uom,
             service_type,
@@ -443,18 +438,18 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
     if power_of_ten is None:
         power_of_ten = -3
         _LOGGER.warning(
-            "[%s] powerOfTenMultiplier not found in ReadingType — defaulting to -3.",
+            "[%s] powerOfTenMultiplier not found in ReadingType -- defaulting to -3.",
             path.name,
         )
 
-    # ── Determine final unit-conversion multiplier ────────────────────────
+    # -- Determine final unit-conversion multiplier ------------------------
     base_multiplier = 10.0**power_of_ten
 
     if uom == _UOM_WH:
-        unit_conversion = 1.0 / 1000.0  # Wh → kWh
+        unit_conversion = 1.0 / 1000.0  # Wh -> kWh
         unit_label = "kWh"
     elif uom == _UOM_THERMS:
-        unit_conversion = 1.0  # therms → therms (stored as CCF)
+        unit_conversion = 1.0  # therms -> therms (stored as CCF)
         unit_label = "therms"
     else:
         _LOGGER.warning(
@@ -470,7 +465,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
 
     _LOGGER.debug(
         "[%s] XML: service=%s, uom=%d (%s), powerOfTenMultiplier=%d "
-        "→ final_multiplier=%.8f",
+        "-> final_multiplier=%.8f",
         path.name,
         detected_service,
         uom,
@@ -479,7 +474,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
         final_multiplier,
     )
 
-    # ── Parse all IntervalReading elements ────────────────────────────────
+    # -- Parse all IntervalReading elements --------------------------------
     readings_found = 0
 
     for interval_reading in root.iter(_espi("IntervalReading")):
@@ -502,7 +497,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
-        row_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        row_dt = datetime.fromtimestamp(epoch, tz=UTC)
         usage = raw_value * final_multiplier
 
         readings_found += 1
@@ -511,7 +506,7 @@ def _parse_xml(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
-        # Skip negative or zero usage — utility correction rows.
+        # Skip negative or zero usage -- utility correction rows.
         if usage <= 0:
             _LOGGER.debug(
                 "[%s] Skipping non-positive usage %.4f at %s",
