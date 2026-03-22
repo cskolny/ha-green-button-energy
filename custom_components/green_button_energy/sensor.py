@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
-from homeassistant.components.recorder.core import get_instance
+from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.models import (
     StatisticData,
     StatisticMeanType,

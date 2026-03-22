@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import voluptuous as vol
 from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.websocket_api import (
+from homeassistant.components.websocket_api import (  # type: ignore[attr-defined]
     ActiveConnection,
     async_register_command,
     async_response,
