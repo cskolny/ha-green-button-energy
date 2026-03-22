@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Ruff · Black · isort · mypy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ruff black isort mypy \
+            homeassistant \
+            voluptuous
+
+      - name: ruff check
+        run: ruff check custom_components/
+
+      - name: black --check
+        run: black --check custom_components/
+
+      - name: isort --check
+        run: isort --check-only custom_components/
+
+      - name: mypy
+        run: |
+          mypy custom_components/green_button_energy \
+            --ignore-missing-imports \
+            --strict

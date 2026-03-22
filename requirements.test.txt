@@ -1,0 +1,12 @@
+# Test dependencies for the Green Button Energy Import integration.
+#
+# Install with:
+#   pip install -r requirements.test.txt
+#
+# pytest-homeassistant-custom-component re-exports all fixtures from
+# homeassistant/tests/ and is updated daily to track the latest HA release.
+
+pytest==8.3.5
+pytest-asyncio==0.24.0
+pytest-homeassistant-custom-component>=0.13.313
+pytest-cov==5.0.0

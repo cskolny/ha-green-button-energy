@@ -1,18 +1,26 @@
-"""
-Sensor platform for the Green Button Energy Import integration.
+"""Sensor platform for the Green Button Energy Import integration.
 
 After parsing a file, hourly readings are written directly into HA's
-long-term statistics database using recorder.async_import_statistics.
-This is the only way to get historical data into the Energy Dashboard
-with correct past timestamps — simply updating sensor state only
-records a single point at the current time.
+long-term statistics database using
+:func:`~homeassistant.components.recorder.statistics.async_import_statistics`.
+This is the only way to backfill historical data into the Energy Dashboard
+with correct past timestamps — simply updating sensor state records a single
+point at the current time and does not appear in historical hourly charts.
+
+Design constraints
+-------------------
+- ``_attr_state_class`` is set to ``TOTAL_INCREASING`` so the entity appears
+  in the Energy Dashboard configuration picker.
+- ``_attr_native_value`` is permanently ``None`` so HA's recorder never writes
+  a live boundary stat that could corrupt the historical cumulative-sum chain.
+  See inline notes throughout :class:`GreenButtonSensor` for full rationale.
+- ``async_write_ha_state()`` is never called for the same reason.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -55,13 +63,23 @@ from .storage import load_store
 _LOGGER = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Platform setup
+# ---------------------------------------------------------------------------
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Green Button Energy sensors from a config entry."""
+    """Set up both Green Button sensor entities from a config entry.
 
+    Args:
+        hass: The Home Assistant instance.
+        entry: The config entry being loaded.
+        async_add_entities: Callback to register entities with HA.
+    """
     store, data = await load_store(hass)
 
     electric_sensor = GreenButtonSensor(
@@ -90,12 +108,15 @@ async def async_setup_entry(
         unique_id=SENSOR_GAS_UID,
     )
 
-    # NOTE: update_before_add is intentionally omitted (defaults to False).
-    # Passing True causes HA to call async_update() then async_write_ha_state()
-    # at startup — even though we never call async_write_ha_state() ourselves.
-    # That state write causes HA's recorder to write a stat at the current hour
-    # with sum=stored_total, poisoning the DB chain and creating a negative spike
-    # in the Energy Dashboard the next time historical data is imported.
+    # NOTE: ``update_before_add`` is intentionally omitted (defaults to False).
+    # Passing ``True`` causes HA to call ``async_update()`` at startup, which
+    # triggers an automatic ``async_write_ha_state()``.  That state write is
+    # observed by HA's recorder, which inserts a stat at the CURRENT hour with
+    # ``sum = stored_total``.  On a fresh install ``stored_total = 0``, so a
+    # ``sum = 0`` stat lands at today's hour.  After a historical import writes
+    # thousands of rows summing to ~5 500 kWh, the Energy Dashboard computes
+    # ``0 − 5 500 = −5 500 kWh`` — a massive negative spike appearing 30–60
+    # minutes after the import completes.
     async_add_entities([electric_sensor, gas_sensor])
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
@@ -104,10 +125,27 @@ async def async_setup_entry(
     }
 
 
+# ---------------------------------------------------------------------------
+# Sensor entity
+# ---------------------------------------------------------------------------
+
+
 class GreenButtonSensor(SensorEntity):
-    """
-    Cumulative energy/gas sensor that writes historical statistics directly
-    into HA's recorder database for Energy Dashboard backfill support.
+    """Cumulative energy/gas sensor backed by HA's long-term statistics DB.
+
+    This sensor has **no live data source**.  Its sole purpose is to provide
+    an entity ID and metadata that ``async_import_statistics`` can attach
+    historical readings to, making them visible in the Energy Dashboard.
+
+    Key design decisions (see CHANGELOG for full history):
+
+    - ``_attr_native_value = None`` — prevents HA's recorder from writing
+      boundary stats that corrupt the cumulative-sum chain.
+    - ``_attr_state_class = TOTAL_INCREASING`` — required for the entity to
+      appear in the Energy Dashboard configuration picker.
+    - ``async_write_ha_state()`` is never called — same reason as above.
+    - ``_processing_lock`` serialises concurrent import requests so two
+      simultaneous file drops cannot interleave their DB writes.
     """
 
     _attr_should_poll = False
@@ -127,6 +165,20 @@ class GreenButtonSensor(SensorEntity):
         name: str,
         unique_id: str,
     ) -> None:
+        """Initialise the sensor from persisted storage data.
+
+        Args:
+            hass: The Home Assistant instance.
+            store: Open storage handle for persisting import state.
+            data: Current storage data dict (may be empty on first run).
+            service_type: ``"electric"`` or ``"gas"``.
+            total_key: Storage key for the cumulative usage total.
+            time_key: Storage key for the last-imported timestamp.
+            unit: Unit of measurement (``"kWh"`` or ``"CCF"``).
+            device_class: HA sensor device class.
+            name: Human-readable sensor name shown in the UI.
+            unique_id: Stable unique ID for entity registry persistence.
+        """
         self.hass = hass
         self._store = store
         self._data = data
@@ -137,21 +189,33 @@ class GreenButtonSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_name = name
         self._attr_unique_id = unique_id
-        # None = unknown state: prevents HA recorder from writing hourly
-        # boundary stats that corrupt the Energy Dashboard statistics chain.
-        self._attr_native_value = None
+        # Permanently None: prevents HA's recorder from writing hourly boundary
+        # stats that would corrupt the Energy Dashboard statistics chain.
+        self._attr_native_value: float | None = None
         self._processing_lock = asyncio.Lock()
+        # Populated by async_process_file; read by the WebSocket handler.
         self.last_result: ParseResult | None = None
-        self.last_rows_written: int = 0   # rows actually committed to DB on last import
+        self.last_rows_written: int = 0
+
+    # ------------------------------------------------------------------
+    # Public API consumed by the WebSocket handler
+    # ------------------------------------------------------------------
 
     async def async_process_file(self, file_path: str) -> None:
-        """
-        Parse a file and write hourly statistics into HA's recorder database.
+        """Parse *file_path* and write new hourly statistics into the recorder.
 
-        Uses async_import_statistics so every hourly reading gets its correct
-        past timestamp in the Energy Dashboard.
+        Uses :func:`~homeassistant.components.recorder.statistics.async_import_statistics`
+        so every reading lands at its correct historical timestamp in the Energy
+        Dashboard.  Results are stored in :attr:`last_result` and
+        :attr:`last_rows_written` for the WebSocket handler to report back to
+        the frontend.
+
+        Args:
+            file_path: Absolute path to the temporary file written by the
+                WebSocket handler.
         """
-        # Reset both so callers never see stale data from a prior import.
+        # Reset before acquiring the lock so callers never see stale results
+        # from a prior import when the current one raises before completing.
         self.last_result = None
         self.last_rows_written = 0
 
@@ -160,13 +224,14 @@ class GreenButtonSensor(SensorEntity):
 
             _LOGGER.debug(
                 "[%s] Processing '%s' (last_time='%s')",
-                self._attr_name, file_path, last_time or "none",
+                self._attr_name,
+                file_path,
+                last_time or "none",
             )
 
             result: ParseResult = await self.hass.async_add_executor_job(
                 parse_file, file_path, self._service_type, last_time
             )
-
             self.last_result = result
 
             if result.errors:
@@ -178,7 +243,8 @@ class GreenButtonSensor(SensorEntity):
             if not result.has_new_data:
                 _LOGGER.info(
                     "[%s] '%s' — no new rows (already up to date).",
-                    self._attr_name, Path(file_path).name,
+                    self._attr_name,
+                    Path(file_path).name,
                 )
                 return
 
@@ -186,7 +252,7 @@ class GreenButtonSensor(SensorEntity):
             self.last_rows_written = rows_written
 
             if rows_written == 0:
-                # All rows were clipped — nothing new was written to the DB.
+                # Every row the parser found already exists in the DB.
                 # Do not advance last_time or update the running total.
                 return
 
@@ -197,7 +263,7 @@ class GreenButtonSensor(SensorEntity):
             self._data[LAST_FILE_KEY] = Path(file_path).name
             await self._store.async_save(self._data)
 
-            # native_value stays None — do not update sensor state.
+            # Deliberately NOT calling async_write_ha_state() — see class docstring.
 
             _LOGGER.info(
                 "[%s] Imported %.4f %s (%d rows written) from '%s'. Total: %.4f.",
@@ -206,41 +272,51 @@ class GreenButtonSensor(SensorEntity):
                 self._attr_native_unit_of_measurement,
                 rows_written,
                 Path(file_path).name,
-                self._attr_native_value,
+                self._data.get(self._total_key, 0.0),
             )
 
             self._send_success_notification(file_path, written_usage, rows_written, newest_written)
 
-    async def _import_statistics(self, result: ParseResult) -> tuple[int, float, str]:
-        """
-        Write hourly readings as long-term statistics into the recorder.
+    # ------------------------------------------------------------------
+    # Statistics import
+    # ------------------------------------------------------------------
 
-        ── Why we use stored last_time, not get_last_statistics ────────────────
+    async def _import_statistics(
+        self,
+        result: ParseResult,
+    ) -> tuple[int, float, str]:
+        """Write accepted hourly readings into the HA long-term statistics DB.
 
-        After every successful import, async_write_ha_state() updates the
-        sensor's state in HA.  HA's recorder observes this state change and
-        writes its own stat for the entity at the CURRENT hour's timestamp —
-        even though this integration has no live sensor.  If we then use
-        get_last_statistics to find the baseline, it returns that recorder-
-        written stat at TODAY, causing every row in the next import file
-        (which covers historical dates) to be discarded as "already in the DB".
+        Why stored ``last_time``, not ``get_last_statistics``, for filtering
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Calling ``async_write_ha_state()`` causes HA's recorder to write a
+        stat for this entity at the CURRENT hour — even though this integration
+        has no live sensor.  If ``get_last_statistics`` were used for row
+        filtering it would return that recorder-written stat (timestamped
+        *today*), and every row in the next import file (covering historical
+        dates) would be discarded as "already in the DB."  Result: 0 rows
+        written, no notification, and no storage update.
 
-        The fix: use the stored last_import_time from .storage as the true
-        boundary.  That value is only ever written by us, after a confirmed
-        successful write to the recorder.  It accurately reflects the last
-        row we actually imported — recorder-written live stats are invisible
-        to it.
+        Resolution: the parser applies the stored ``last_time`` as the
+        deduplication cutoff.  ``get_last_statistics`` is called here
+        **solely** to obtain the cumulative-sum baseline (the kWh total to
+        continue from) — never for filtering.
 
-        ── Algorithm ───────────────────────────────────────────────────────────
+        Algorithm
+        ~~~~~~~~~~
+        1. Sort accepted readings chronologically.
+        2. Retrieve the current end-of-chain cumulative sum from the DB.
+        3. Append each reading to that sum and build :class:`StatisticData`.
+        4. Call :func:`async_import_statistics` to persist all rows atomically.
 
-        The parser has already skipped all rows <= stored last_import_time,
-        so every row in hourly_readings is genuinely new.
-
-        We use get_last_statistics solely to get the cumulative sum baseline
-        (the kWh total to continue from), not to make any filtering decisions.
+        Args:
+            result: A successful :class:`~.parser.ParseResult` with at least
+                one entry in ``hourly_readings``.
 
         Returns:
-            (rows_written, written_usage, newest_written_time)
+            A ``(rows_written, written_usage, newest_written_time)`` tuple.
+            ``rows_written`` is the count of :class:`StatisticData` objects
+            passed to :func:`async_import_statistics`.
         """
         if not result.hourly_readings:
             _LOGGER.warning("[%s] No hourly readings to import.", self._attr_name)
@@ -248,8 +324,8 @@ class GreenButtonSensor(SensorEntity):
 
         sorted_readings = sorted(result.hourly_readings, key=lambda x: x[0])
 
-        # ── Get the cumulative sum baseline ───────────────────────────────────
-        # We only use this for its sum value, never for filtering decisions.
+        # Retrieve the current cumulative-sum baseline from the recorder DB.
+        # Used only for the baseline value — never for filtering decisions.
         last_stats = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics,
             self.hass,
@@ -265,13 +341,14 @@ class GreenButtonSensor(SensorEntity):
             running_sum = float(last.get("sum") or 0.0)
             _LOGGER.debug(
                 "[%s] Baseline sum=%.4f (from last stat in DB)",
-                self._attr_name, running_sum,
+                self._attr_name,
+                running_sum,
             )
         else:
-            _LOGGER.debug("[%s] First import — no existing stats, baseline=0.", self._attr_name)
-
-        if not sorted_readings:
-            return 0, 0.0, result.newest_time
+            _LOGGER.debug(
+                "[%s] First import — no existing stats, baseline=0.",
+                self._attr_name,
+            )
 
         statistic_data: list[StatisticData] = []
         for dt_utc, usage in sorted_readings:
@@ -284,7 +361,11 @@ class GreenButtonSensor(SensorEntity):
                 )
             )
 
-        unit_class = "energy" if self._attr_native_unit_of_measurement == UNIT_ELECTRIC else "volume"
+        unit_class = (
+            "energy"
+            if self._attr_native_unit_of_measurement == UNIT_ELECTRIC
+            else "volume"
+        )
 
         metadata = StatisticMetaData(
             has_mean=False,
@@ -297,11 +378,12 @@ class GreenButtonSensor(SensorEntity):
             unit_of_measurement=self._attr_native_unit_of_measurement,
         )
 
-        first_sum = statistic_data[0]["sum"]
-        last_sum  = statistic_data[-1]["sum"]
         _LOGGER.info(
             "[%s] Writing %d statistics (sum %.4f → %.4f %s).",
-            self._attr_name, len(statistic_data), first_sum, last_sum,
+            self._attr_name,
+            len(statistic_data),
+            statistic_data[0]["sum"],
+            statistic_data[-1]["sum"],
             self._attr_native_unit_of_measurement,
         )
 
@@ -311,6 +393,10 @@ class GreenButtonSensor(SensorEntity):
         newest_written = sorted_readings[-1][0].strftime(_STORAGE_FMT)
         return len(statistic_data), written_usage, newest_written
 
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
     def _send_success_notification(
         self,
         file_path: str,
@@ -318,7 +404,14 @@ class GreenButtonSensor(SensorEntity):
         rows_written: int,
         newest_written: str,
     ) -> None:
-        """Show a persistent notification on successful import."""
+        """Display a persistent HA notification confirming a successful import.
+
+        Args:
+            file_path: Full path to the processed temp file (basename shown).
+            written_usage: Total usage from rows committed to the DB.
+            rows_written: Number of rows committed to the DB.
+            newest_written: UTC timestamp string of the last written row.
+        """
         pn_create(
             self.hass,
             message=(
@@ -326,15 +419,26 @@ class GreenButtonSensor(SensorEntity):
                 f"📄 File: `{Path(file_path).name}`\n"
                 f"✅ Rows written: {rows_written}\n"
                 f"📊 New usage: {written_usage:.4f} {self._attr_native_unit_of_measurement}\n"
-                f"🔢 Running total: {self._data.get(self._total_key, 0.0):.4f} {self._attr_native_unit_of_measurement}\n"
+                f"🔢 Running total: "
+                f"{self._data.get(self._total_key, 0.0):.4f} "
+                f"{self._attr_native_unit_of_measurement}\n"
                 f"🕐 Data through: {newest_written}"
             ),
             title="Avangrid Green Button — Import Successful",
             notification_id=f"{NOTIF_SUCCESS}_{self._attr_unique_id}",
         )
 
-    def _send_error_notification(self, file_path: str, result: ParseResult) -> None:
-        """Show a persistent notification on parse failure."""
+    def _send_error_notification(
+        self,
+        file_path: str,
+        result: ParseResult,
+    ) -> None:
+        """Display a persistent HA notification reporting a parse failure.
+
+        Args:
+            file_path: Full path to the processed temp file (basename shown).
+            result: The failed :class:`~.parser.ParseResult` containing errors.
+        """
         errors_fmt = "\n".join(f"- {e}" for e in result.errors)
         pn_create(
             self.hass,

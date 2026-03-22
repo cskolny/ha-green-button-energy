@@ -1,15 +1,14 @@
-"""
-Green Button Energy Import — Home Assistant Custom Integration.
+"""Green Button Energy Import — Home Assistant Custom Integration.
 
-Imports hourly smart meter usage data from Avangrid utility Green Button
+Imports hourly smart-meter usage data from Avangrid utility Green Button
 CSV/XML exports into the Home Assistant Energy Dashboard via a drag-and-drop
 sidebar panel.
 
 Supported utilities: RG&E, NYSEG, Central Maine Power, United Illuminating,
 Connecticut Natural Gas, Southern Connecticut Gas, Berkshire Gas.
 
-No configuration.yaml changes are needed. The sidebar panel is registered
-automatically when the integration is added via Settings → Devices & Services.
+No ``configuration.yaml`` changes are needed.  The sidebar panel is registered
+automatically when the integration is added via **Settings → Devices & Services**.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import panel_custom, websocket_api
@@ -29,19 +29,34 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS: list[str] = ["sensor"]
 
 _FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
-_PANEL_JS      = "green-button-energy-panel.js"
-_PANEL_URL     = f"/{DOMAIN}_frontend"   # Static path served by HA's HTTP server
+_PANEL_JS = "green-button-energy-panel.js"
+# URL prefix under which HA's HTTP server serves the frontend/ directory.
+_PANEL_URL = f"/{DOMAIN}_frontend"
 
-# Maximum file content size accepted over WebSocket (10 MB as UTF-8 text).
-# Prevents memory pressure on the Pi from oversized or malformed uploads.
+# Maximum file-content size accepted over WebSocket (10 MB as UTF-8 text).
+# Prevents memory pressure on resource-constrained hosts from oversized or
+# malformed uploads.  Must stay in sync with ``_MAX_FILE_BYTES`` in the JS.
 _MAX_FILE_BYTES = 10 * 1024 * 1024
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register the WebSocket command (runs once at HA startup)."""
+# ---------------------------------------------------------------------------
+# Integration lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Register the WebSocket command once at HA startup.
+
+    Args:
+        hass: The Home Assistant instance.
+        config: Full ``configuration.yaml`` contents (unused by this integration).
+
+    Returns:
+        Always ``True``.
+    """
     hass.data.setdefault(DOMAIN, {})
     websocket_api.async_register_command(hass, ws_handle_import_file)
     _LOGGER.info("[%s] Setup complete — WebSocket command registered.", DOMAIN)
@@ -49,12 +64,19 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up sensors and register the sidebar panel from a config entry."""
+    """Set up sensors and register the sidebar panel from a config entry.
+
+    Args:
+        hass: The Home Assistant instance.
+        entry: The config entry being loaded.
+
+    Returns:
+        ``True`` on success.
+    """
     hass.data.setdefault(DOMAIN, {})
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register the sidebar panel programmatically — no configuration.yaml needed.
-    # Guard against duplicate registration if the entry is reloaded.
+    # Guard against duplicate panel registration when the entry is reloaded.
     if not hass.data[DOMAIN].get("panel_registered"):
         await _async_register_panel(hass)
         hass.data[DOMAIN]["panel_registered"] = True
@@ -64,7 +86,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry and clean up associated data.
+
+    Args:
+        hass: The Home Assistant instance.
+        entry: The config entry being unloaded.
+
+    Returns:
+        ``True`` when all platforms unloaded successfully.
+    """
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
@@ -72,28 +102,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+# ---------------------------------------------------------------------------
+# Sidebar panel registration
+# ---------------------------------------------------------------------------
+
+
 async def _async_register_panel(hass: HomeAssistant) -> None:
-    """
-    Register the sidebar panel and serve the frontend JS via HA's HTTP server.
+    """Register the sidebar panel and serve the frontend JS via HA's HTTP server.
 
-    This replaces the panel_custom configuration.yaml entry entirely.
-    The JS file is served directly from the integration's frontend/ directory —
-    no copying to config/www/ is needed or performed.
-    """
-    # Register the frontend/ directory as a static path served by HA's HTTP server.
-    await hass.http.async_register_static_paths([
-        StaticPathConfig(
-            url_path=_PANEL_URL,
-            path=str(_FRONTEND_DIR),
-            cache_headers=False,   # Disable caching so updates appear immediately
-        )
-    ])
+    Serves the ``frontend/`` directory directly from the integration package —
+    no copying to ``config/www/`` is required or performed.
 
-    # Register the panel — programmatic equivalent of panel_custom in YAML.
+    Args:
+        hass: The Home Assistant instance.
+    """
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                url_path=_PANEL_URL,
+                path=str(_FRONTEND_DIR),
+                # Disable caching so the browser always fetches the latest JS
+                # after an integration update without requiring a hard refresh.
+                cache_headers=False,
+            )
+        ]
+    )
+
     await panel_custom.async_register_panel(
         hass,
-        webcomponent_name="green-button-energy-panel",  # Matches customElements.define()
-        frontend_url_path=DOMAIN,                       # Sidebar URL: /green_button_energy
+        webcomponent_name="green-button-energy-panel",  # matches customElements.define()
+        frontend_url_path=DOMAIN,                        # sidebar URL: /green_button_energy
         sidebar_title="Energy Import",
         sidebar_icon="mdi:lightning-bolt-circle",
         module_url=f"{_PANEL_URL}/{_PANEL_JS}",
@@ -105,8 +143,9 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket command
+# WebSocket command handler
 # ---------------------------------------------------------------------------
+
 
 @websocket_api.websocket_command(
     {
@@ -120,22 +159,34 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
 async def ws_handle_import_file(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
-    msg: dict,
+    msg: dict[str, Any],
 ) -> None:
-    """Handle an import_file WebSocket command from the frontend panel."""
-    msg_id       = msg["id"]
-    # Strip any directory components from the filename — defensive measure
-    # to prevent path traversal if this field is ever used in a file path.
-    filename     = pathlib.Path(msg["filename"]).name
-    content      = msg["content"]
-    service_type = msg["service_type"]
+    """Handle an ``import_file`` WebSocket message from the sidebar panel.
 
-    # Reject files that exceed the size limit before doing any further work.
+    Validates the payload, writes a temporary file, delegates parsing and
+    statistics import to the appropriate sensor, and returns a structured
+    result or error to the frontend.
+
+    Args:
+        hass: The Home Assistant instance.
+        connection: The active WebSocket connection.
+        msg: The validated message dict from the frontend.
+    """
+    msg_id = msg["id"]
+    # Strip directory components to prevent path-traversal attacks.
+    filename: str = pathlib.Path(msg["filename"]).name
+    content: str = msg["content"]
+    service_type: str = msg["service_type"]
+
+    # Reject oversized payloads before doing any further work.
     content_bytes = len(content.encode("utf-8"))
     if content_bytes > _MAX_FILE_BYTES:
         _LOGGER.warning(
-            "[%s] Rejected '%s': content size %d bytes exceeds %d byte limit.",
-            DOMAIN, filename, content_bytes, _MAX_FILE_BYTES,
+            "[%s] Rejected '%s': %d bytes exceeds %d-byte limit.",
+            DOMAIN,
+            filename,
+            content_bytes,
+            _MAX_FILE_BYTES,
         )
         connection.send_error(
             msg_id,
@@ -148,7 +199,10 @@ async def ws_handle_import_file(
 
     _LOGGER.info(
         "[%s] Import request: file='%s', type='%s', size=%d bytes",
-        DOMAIN, filename, service_type, content_bytes,
+        DOMAIN,
+        filename,
+        service_type,
+        content_bytes,
     )
 
     ext = pathlib.Path(filename).suffix.lower()
@@ -171,8 +225,12 @@ async def ws_handle_import_file(
         return
 
     def _write_temp() -> str:
+        """Write file content to a named temporary file and return its path."""
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=ext, encoding="utf-8", delete=False
+            mode="w",
+            suffix=ext,
+            encoding="utf-8",
+            delete=False,
         ) as tmp:
             tmp.write(content)
             return tmp.name
@@ -185,51 +243,73 @@ async def ws_handle_import_file(
         rows_written = sensor.last_rows_written
 
         if result is None:
-            connection.send_result(msg_id, {
-                "success": True,
-                "rows_imported": 0,
-                "rows_written": 0,
-                "new_usage": 0.0,
-                "unit": sensor.native_unit_of_measurement,
-                "newest_time": "",
-            })
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "rows_imported": 0,
+                    "rows_written": 0,
+                    "new_usage": 0.0,
+                    "unit": sensor.native_unit_of_measurement,
+                    "newest_time": "",
+                },
+            )
         elif result.errors:
-            connection.send_result(msg_id, {
-                "success": False,
-                "error": "; ".join(result.errors),
-                "rows_imported": result.rows_imported,
-                "rows_written": 0,
-                "rows_skipped": result.rows_skipped,
-                "unit": sensor.native_unit_of_measurement,
-            })
+            connection.send_result(
+                msg_id,
+                {
+                    "success": False,
+                    "error": "; ".join(result.errors),
+                    "rows_imported": result.rows_imported,
+                    "rows_written": 0,
+                    "rows_skipped": result.rows_skipped,
+                    "unit": sensor.native_unit_of_measurement,
+                },
+            )
         elif rows_written == 0:
-            # Parser found rows but none were new enough to write —
-            # file is fully covered by existing DB data.
-            connection.send_result(msg_id, {
-                "success": True,
-                "rows_imported": result.rows_imported,
-                "rows_written": 0,
-                "new_usage": 0.0,
-                "newest_time": result.newest_time,
-                "unit": sensor.native_unit_of_measurement,
-            })
+            # Parser found rows but all were already present in the DB.
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "rows_imported": result.rows_imported,
+                    "rows_written": 0,
+                    "new_usage": 0.0,
+                    "newest_time": result.newest_time,
+                    "unit": sensor.native_unit_of_measurement,
+                },
+            )
         else:
-            connection.send_result(msg_id, {
-                "success": True,
-                "rows_imported": result.rows_imported,
-                "rows_written": rows_written,
-                "rows_skipped": result.rows_skipped,
-                "new_usage": round(result.new_usage, 4),
-                "newest_time": result.newest_time,
-                "unit": sensor.native_unit_of_measurement,
-            })
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "rows_imported": result.rows_imported,
+                    "rows_written": rows_written,
+                    "rows_skipped": result.rows_skipped,
+                    "new_usage": round(result.new_usage, 4),
+                    "newest_time": result.newest_time,
+                    "unit": sensor.native_unit_of_measurement,
+                },
+            )
     finally:
         await hass.async_add_executor_job(os.unlink, tmp_path)
 
 
-def _find_sensor(hass: HomeAssistant, service_type: str):
-    """Find the GreenButtonSensor instance for the given service_type."""
-    domain_data = hass.data.get(DOMAIN, {})
+def _find_sensor(hass: HomeAssistant, service_type: str) -> Any | None:
+    """Locate the :class:`~.sensor.GreenButtonSensor` for *service_type*.
+
+    Searches ``hass.data[DOMAIN]`` for a config-entry dict that contains a
+    sensor registered under the given service key.
+
+    Args:
+        hass: The Home Assistant instance.
+        service_type: ``"electric"`` or ``"gas"``.
+
+    Returns:
+        The matching sensor instance, or ``None`` if not found.
+    """
+    domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
     for entry_data in domain_data.values():
         if isinstance(entry_data, dict):
             sensor = entry_data.get(service_type.lower())
