@@ -43,5 +43,4 @@ class GreenButtonConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title="Green Button Energy Import",
             data={},
-        )
-        
+        ) 

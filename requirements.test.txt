@@ -7,5 +7,5 @@
 # pytest-asyncio and pytest-cov. Do NOT pin either of those here — let phcc's
 # dependency resolver pull the exact versions it requires.
 # Requires Python >= 3.13.
-pytest==8.3.5
+pytest==9.0.0
 pytest-homeassistant-custom-component>=0.13.313
