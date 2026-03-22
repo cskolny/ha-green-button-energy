@@ -11,19 +11,23 @@ from unittest.mock import patch
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.setup import async_setup_component
 
 from custom_components.green_button_energy.const import DOMAIN
 
-# Patch panel registration and websocket for all config flow tests.
-# When CREATE_ENTRY fires, HA calls async_setup_entry which calls
-# _async_register_panel — this must be suppressed in tests.
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 
 @pytest.fixture(autouse=True)
-def patch_panel_and_ws():
-    """Suppress panel registration and websocket setup for all flow tests."""
+def patch_deps_and_panel():
+    """Skip frontend/panel_custom dependency resolution and panel registration.
+
+    ``frontend`` requires ``hass_frontend`` which is not installed in the CI
+    test environment. Patching ``async_process_deps_reqs`` prevents HA from
+    attempting to set up that dependency chain before our config flow runs.
+    """
     with (
+        patch("homeassistant.setup.async_process_deps_reqs"),
         patch(
             "custom_components.green_button_energy._async_register_panel",
             return_value=None,

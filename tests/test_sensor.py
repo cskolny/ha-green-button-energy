@@ -40,13 +40,24 @@ async def _setup_integration(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    """Set up the integration by calling async_setup_entry directly.
+    """Set up the integration properly for testing.
 
-    Bypasses hass.config_entries.async_setup() to avoid HA resolving the
-    frontend/panel_custom dependencies unavailable in the test environment.
+    Uses async_setup_component which correctly transitions the config entry
+    through NOT_LOADED -> LOADING -> LOADED states (required for
+    async_forward_entry_setups to succeed).
+
+    Patches:
+    - ``homeassistant.setup.async_process_deps_reqs`` — skips dependency
+      resolution so ``frontend``/``panel_custom`` (unavailable in CI) do not
+      cause a DependencyError.
+    - ``_async_register_panel`` — skips sidebar panel registration.
+    - ``websocket_api.async_register_command`` — skips WS command registration.
     """
+    from homeassistant.setup import async_setup_component
+
     mock_config_entry.add_to_hass(hass)
     with (
+        patch("homeassistant.setup.async_process_deps_reqs"),
         patch(
             "custom_components.green_button_energy._async_register_panel",
             return_value=None,
@@ -55,9 +66,7 @@ async def _setup_integration(
             "custom_components.green_button_energy.websocket_api.async_register_command"
         ),
     ):
-        from custom_components.green_button_energy import async_setup, async_setup_entry
-        await async_setup(hass, {})
-        assert await async_setup_entry(hass, mock_config_entry)
+        assert await async_setup_component(hass, DOMAIN, {})
         await hass.async_block_till_done()
 
 

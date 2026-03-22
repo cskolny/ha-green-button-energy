@@ -189,9 +189,7 @@ def parse_file(file_path: str, service_type: str, last_time: str) -> ParseResult
         return _parse_xml(path, service_type, last_time)
 
     result = ParseResult(newest_time=last_time)
-    result.errors.append(
-        f"Unsupported file extension '{suffix}'. Expected .csv or .xml."
-    )
+    result.errors.append(f"Unsupported file extension '{suffix}'. Expected .csv or .xml.")
     return result
 
 
