@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.components.persistent_notification import async_create as pn_create
-from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.core import get_instance
 from homeassistant.components.recorder.models import (
     StatisticData,
     StatisticMeanType,
@@ -159,7 +159,7 @@ class GreenButtonSensor(SensorEntity):
     def __init__(
         self,
         hass: HomeAssistant,
-        store: Store,
+        store: Store[dict[str, Any]],
         data: dict[str, Any],
         service_type: str,
         total_key: str,

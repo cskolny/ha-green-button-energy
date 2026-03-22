@@ -71,7 +71,7 @@ from .const import STORAGE_KEY, STORAGE_VERSION
 _LOGGER = logging.getLogger(__name__)
 
 
-async def load_store(hass: HomeAssistant) -> tuple[Store, dict[str, Any]]:
+async def load_store(hass: HomeAssistant) -> tuple[Store[dict[str, Any]], dict[str, Any]]:
     """Load or initialise the integration's persistent storage.
 
     Creates the :class:`~homeassistant.helpers.storage.Store` and reads the
@@ -86,7 +86,7 @@ async def load_store(hass: HomeAssistant) -> tuple[Store, dict[str, Any]]:
         :class:`~homeassistant.helpers.storage.Store` and *data* is the
         deserialized JSON object (never ``None``).
     """
-    store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     data: dict[str, Any] = await store.async_load() or {}
     _LOGGER.debug("[green_button_energy] Storage loaded: %s", data)
     return store, data

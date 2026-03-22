@@ -63,7 +63,7 @@ async def _setup_integration(
             return_value=None,
         ),
         patch(
-            "custom_components.green_button_energy.websocket_api.async_register_command"
+            "custom_components.green_button_energy.async_register_command"
         ),
     ):
         assert await async_setup_component(hass, DOMAIN, {})

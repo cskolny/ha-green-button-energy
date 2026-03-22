@@ -33,7 +33,7 @@ def patch_deps_and_panel():
             return_value=None,
         ),
         patch(
-            "custom_components.green_button_energy.websocket_api.async_register_command"
+            "custom_components.green_button_energy.async_register_command"
         ),
     ):
         yield

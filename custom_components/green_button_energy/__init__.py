@@ -17,15 +17,24 @@ import logging
 import os
 import pathlib
 import tempfile
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.components import panel_custom, websocket_api
+from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.websocket_api import (
+    ActiveConnection,
+    async_register_command,
+    async_response,
+    websocket_command,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+
+if TYPE_CHECKING:
+    from .sensor import GreenButtonSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +67,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         Always ``True``.
     """
     hass.data.setdefault(DOMAIN, {})
-    websocket_api.async_register_command(hass, ws_handle_import_file)
+    async_register_command(hass, ws_handle_import_file)
     _LOGGER.info("[%s] Setup complete — WebSocket command registered.", DOMAIN)
     return True
 
@@ -147,7 +156,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
 # ---------------------------------------------------------------------------
 
 
-@websocket_api.websocket_command(
+@websocket_command(
     {
         vol.Required("type"): "green_button_energy/import_file",
         vol.Required("filename"): str,
@@ -155,10 +164,10 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         vol.Required("service_type"): vol.In(["electric", "gas"]),
     },
 )
-@websocket_api.async_response
+@async_response
 async def ws_handle_import_file(
     hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
+    connection: ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
     """Handle an ``import_file`` WebSocket message from the sidebar panel.
@@ -296,7 +305,7 @@ async def ws_handle_import_file(
         await hass.async_add_executor_job(os.unlink, tmp_path)
 
 
-def _find_sensor(hass: HomeAssistant, service_type: str) -> object | None:
+def _find_sensor(hass: HomeAssistant, service_type: str) -> "GreenButtonSensor | None":
     """Locate the :class:`~.sensor.GreenButtonSensor` for *service_type*.
 
     Searches ``hass.data[DOMAIN]`` for a config-entry dict that contains a
@@ -312,7 +321,7 @@ def _find_sensor(hass: HomeAssistant, service_type: str) -> object | None:
     domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
     for entry_data in domain_data.values():
         if isinstance(entry_data, dict):
-            sensor = entry_data.get(service_type.lower())
+            sensor: GreenButtonSensor | None = entry_data.get(service_type.lower())
             if sensor is not None:
                 return sensor
     return None
