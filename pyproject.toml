@@ -14,7 +14,7 @@ skip_covered = false
 fail_under = 80
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 99
 select = ["E", "F", "W", "I", "UP", "B", "ANN", "BLE", "C4", "SIM"]
 ignore = [
@@ -24,13 +24,13 @@ ignore = [
 
 [tool.black]
 line-length = 99
-target-version = ["py312"]
+target-version = ["py313"]
 
 [tool.isort]
 profile = "black"
 line_length = 99
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 ignore_missing_imports = true

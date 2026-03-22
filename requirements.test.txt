@@ -5,7 +5,7 @@
 #
 # pytest-homeassistant-custom-component re-exports all fixtures from
 # homeassistant/tests/ and is updated daily to track the latest HA release.
-
+# Requires Python >= 3.13 for versions >= 0.13.206.
 pytest==8.3.5
 pytest-asyncio==0.24.0
 pytest-homeassistant-custom-component>=0.13.313
