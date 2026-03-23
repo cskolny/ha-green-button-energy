@@ -13,7 +13,6 @@ via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and
 **gas** (CCF/therms) usage from Green Button CSV and XML exports.
 
 ![Energy Dashboard](screenshots/energy-dashboard.png)
-![Import Panel](screenshots/import-panel.png)
 
 ---
 
@@ -171,6 +170,8 @@ Download a separate file for electric and gas if needed.
 > backwards from today. Overlapping date ranges between files are handled safely.
 
 ### Importing Files
+
+![Import Panel](screenshots/import-panel.png)
 
 1. Open **Energy Import** in the Home Assistant sidebar
 2. Drag your electric CSV or XML onto the ⚡ **Electric Usage** zone
