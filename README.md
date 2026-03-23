@@ -13,6 +13,7 @@ via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and
 **gas** (CCF/therms) usage from Green Button CSV and XML exports.
 
 ![Energy Dashboard](screenshots/energy-dashboard.png)
+![Import Panel](screenshots/import-panel.png)
 
 ---
 
