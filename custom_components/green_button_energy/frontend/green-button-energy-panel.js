@@ -2,7 +2,8 @@
  * Green Button Energy Import Panel
  *
  * A custom Home Assistant sidebar panel that provides drag-and-drop
- * file import for Avangrid Green Button CSV and XML exports.
+ * file import for Avangrid Green Button CSV/XML exports (hourly usage)
+ * and monthly billing CSV exports (cost data).
  *
  * Architecture:
  *   - Runs entirely in the browser as a native Web Component
@@ -12,7 +13,13 @@
  *     using hass.connection.sendMessagePromise (no extra auth needed)
  *   - Backend WebSocket handler parses the file in memory and
  *     updates the sensors directly — no filesystem access required
+ *
+ * Two WebSocket message types:
+ *   green_button_energy/import_file    — hourly usage CSV/XML
+ *   green_button_energy/import_billing — monthly billing CSV
  */
+
+// @version 1.6.0
 
 // Maximum file size — must match _MAX_FILE_BYTES in __init__.py
 const _MAX_FILE_MB = 10;
@@ -50,7 +57,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
         }
 
         .page {
-          max-width: 860px;
+          max-width: 900px;
           margin: 0 auto;
           padding: 24px 16px 48px;
         }
@@ -75,12 +82,36 @@ class GreenButtonEnergyPanel extends HTMLElement {
           margin: 0 0 28px;
         }
 
+        /* ── Section headers ── */
+        .section-header {
+          font-size: 0.85rem;
+          font-weight: 500;
+          color: var(--secondary-text-color, #727272);
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          margin: 0 0 10px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .section-hint {
+          font-size: 0.8rem;
+          color: var(--secondary-text-color, #727272);
+          margin: -6px 0 14px;
+        }
+
+        .section-hint a {
+          color: var(--primary-color, #03a9f4);
+          text-decoration: none;
+        }
+
         /* ── Drop zones ── */
         .zones {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 16px;
-          margin-bottom: 24px;
+          margin-bottom: 28px;
         }
 
         @media (max-width: 600px) {
@@ -90,7 +121,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
         .drop-zone {
           border: 2px dashed var(--divider-color, #e0e0e0);
           border-radius: 12px;
-          padding: 32px 20px;
+          padding: 28px 20px;
           text-align: center;
           cursor: pointer;
           transition: border-color 0.2s, background 0.2s;
@@ -111,8 +142,8 @@ class GreenButtonEnergyPanel extends HTMLElement {
         }
 
         .drop-zone .icon {
-          font-size: 2.4rem;
-          margin-bottom: 10px;
+          font-size: 2.2rem;
+          margin-bottom: 8px;
           display: block;
         }
 
@@ -124,7 +155,7 @@ class GreenButtonEnergyPanel extends HTMLElement {
         }
 
         .drop-zone .hint {
-          font-size: 0.8rem;
+          font-size: 0.78rem;
           color: var(--secondary-text-color, #727272);
         }
 
@@ -135,6 +166,13 @@ class GreenButtonEnergyPanel extends HTMLElement {
           cursor: pointer;
           width: 100%;
           height: 100%;
+        }
+
+        /* ── Divider ── */
+        .section-divider {
+          border: none;
+          border-top: 1px solid var(--divider-color, #e0e0e0);
+          margin: 8px 0 24px;
         }
 
         /* ── Spinner ── */
@@ -202,6 +240,16 @@ class GreenButtonEnergyPanel extends HTMLElement {
           gap: 6px;
         }
 
+        .result-badge {
+          font-size: 0.7rem;
+          font-weight: 400;
+          background: var(--primary-background-color, #f5f5f5);
+          border-radius: 4px;
+          padding: 1px 6px;
+          color: var(--secondary-text-color, #727272);
+          margin-left: 2px;
+        }
+
         .result-detail {
           font-size: 0.82rem;
           color: var(--secondary-text-color, #727272);
@@ -231,6 +279,22 @@ class GreenButtonEnergyPanel extends HTMLElement {
           background: var(--card-background-color, #fff);
           border-radius: 10px;
         }
+
+        /* ── Info box ── */
+        .info-box {
+          background: color-mix(in srgb, var(--primary-color, #03a9f4) 8%, transparent);
+          border: 1px solid color-mix(in srgb, var(--primary-color, #03a9f4) 30%, transparent);
+          border-radius: 8px;
+          padding: 12px 14px;
+          font-size: 0.82rem;
+          color: var(--primary-text-color, #212121);
+          margin-bottom: 20px;
+          line-height: 1.5;
+        }
+
+        .info-box strong {
+          color: var(--primary-color, #03a9f4);
+        }
       </style>
 
       <div class="page">
@@ -239,31 +303,63 @@ class GreenButtonEnergyPanel extends HTMLElement {
           Green Button Energy Import
         </h1>
         <p class="subtitle">
-          Download your usage data from <strong>your utility website → My Energy Use → Download Data</strong>,
-          then drop the CSV or XML file below.
+          Download your usage and billing data from <strong>your utility website → My Energy Use → Download Data</strong>,
+          then drop the files below.
+        </p>
+
+        <!-- ── Hourly Usage Section ── -->
+        <div class="section-header">⚡ Hourly Usage Data</div>
+        <p class="section-hint">
+          CSV or XML — imports hourly kWh/therm readings into the Energy Dashboard history.
         </p>
 
         <div class="zones">
-          <!-- Electric drop zone -->
-          <div class="drop-zone" id="zone-electric"
-               data-service-type="electric" data-label="Electric">
-            <input type="file" accept=".csv,.xml"
-                   id="file-electric"
-                   data-service-type="electric" />
+          <div class="drop-zone" id="zone-electric" data-service-type="electric" data-import-type="usage">
+            <input type="file" accept=".csv,.xml" id="file-electric" data-service-type="electric" data-import-type="usage" />
             <span class="icon">⚡</span>
             <div class="label">Electric Usage</div>
-            <div class="hint">Drop CSV or XML here, or click to browse</div>
+            <div class="hint">CSV or XML · hourly kWh</div>
           </div>
 
-          <!-- Gas drop zone -->
-          <div class="drop-zone" id="zone-gas"
-               data-service-type="gas" data-label="Gas">
-            <input type="file" accept=".csv,.xml"
-                   id="file-gas"
-                   data-service-type="gas" />
+          <div class="drop-zone" id="zone-gas" data-service-type="gas" data-import-type="usage">
+            <input type="file" accept=".csv,.xml" id="file-gas" data-service-type="gas" data-import-type="usage" />
             <span class="icon">🔥</span>
             <div class="label">Gas Usage</div>
-            <div class="hint">Drop CSV or XML here, or click to browse</div>
+            <div class="hint">CSV or XML · hourly therms</div>
+          </div>
+        </div>
+
+        <hr class="section-divider" />
+
+        <!-- ── Monthly Billing Section ── -->
+        <div class="section-header">💰 Monthly Billing Data</div>
+        <p class="section-hint">
+          Billing CSV only — imports monthly dollar costs so the Energy Dashboard can show your actual spend.
+          After importing, go to <strong>Settings → Energy</strong> and set the cost sensor for each commodity.
+        </p>
+
+        <div class="info-box">
+          <strong>How to use billing data in the Energy Dashboard:</strong>
+          After importing, go to <strong>Settings → Energy → Electricity grid → Edit</strong> and
+          change "Use a static price" to "Use an entity tracking the total cost" →
+          select <strong>Avangrid Electric Cost</strong>.
+          Do the same for Gas. The Energy Dashboard will then show your actual monthly bills
+          spread across the billing period.
+        </div>
+
+        <div class="zones">
+          <div class="drop-zone" id="zone-electric-billing" data-service-type="electric" data-import-type="billing">
+            <input type="file" accept=".csv" id="file-electric-billing" data-service-type="electric" data-import-type="billing" />
+            <span class="icon">🧾</span>
+            <div class="label">Electric Billing</div>
+            <div class="hint">CSV only · monthly $ costs</div>
+          </div>
+
+          <div class="drop-zone" id="zone-gas-billing" data-service-type="gas" data-import-type="billing">
+            <input type="file" accept=".csv" id="file-gas-billing" data-service-type="gas" data-import-type="billing" />
+            <span class="icon">🧾</span>
+            <div class="label">Gas Billing</div>
+            <div class="hint">CSV only · monthly $ costs</div>
           </div>
         </div>
 
@@ -288,12 +384,17 @@ class GreenButtonEnergyPanel extends HTMLElement {
   _setupEventListeners() {
     const root = this.shadowRoot;
 
-    // Set up both drop zones
-    ["electric", "gas"].forEach((type) => {
-      const zone = root.getElementById(`zone-${type}`);
-      const input = root.getElementById(`file-${type}`);
+    const zones = [
+      { zoneId: "zone-electric",         fileId: "file-electric",         serviceType: "electric", importType: "usage"    },
+      { zoneId: "zone-gas",              fileId: "file-gas",              serviceType: "gas",      importType: "usage"    },
+      { zoneId: "zone-electric-billing", fileId: "file-electric-billing", serviceType: "electric", importType: "billing"  },
+      { zoneId: "zone-gas-billing",      fileId: "file-gas-billing",      serviceType: "gas",      importType: "billing"  },
+    ];
 
-      // Drag-and-drop events on the zone
+    zones.forEach(({ zoneId, fileId, serviceType, importType }) => {
+      const zone = root.getElementById(zoneId);
+      const input = root.getElementById(fileId);
+
       zone.addEventListener("dragover", (e) => {
         e.preventDefault();
         zone.classList.add("dragover");
@@ -307,56 +408,65 @@ class GreenButtonEnergyPanel extends HTMLElement {
         e.preventDefault();
         zone.classList.remove("dragover");
         const file = e.dataTransfer?.files?.[0];
-        if (file) this._handleFile(file, type, zone);
+        if (file) this._handleFile(file, serviceType, importType, zone);
       });
 
-      // Click-to-browse via hidden file input
       input.addEventListener("change", (e) => {
         const file = e.target.files?.[0];
-        if (file) this._handleFile(file, type, zone);
-        // Reset so the same file can be re-dropped if needed
+        if (file) this._handleFile(file, serviceType, importType, zone);
         input.value = "";
       });
     });
 
-    // Clear button
     root.getElementById("clear-btn").addEventListener("click", () => {
       this._results = [];
       this._refreshResults();
     });
   }
 
-  async _handleFile(file, serviceType, zone) {
-    // Validate file extension
+  async _handleFile(file, serviceType, importType, zone) {
     const ext = file.name.split(".").pop().toLowerCase();
-    if (!["csv", "xml"].includes(ext)) {
+
+    // Billing zones only accept CSV
+    if (importType === "billing" && ext !== "csv") {
       this._addResult({
         type: "error",
         filename: file.name,
         serviceType,
+        importType,
+        message: `Billing imports only support .csv files. Got ".${ext}".`,
+      });
+      return;
+    }
+
+    // Usage zones accept CSV and XML
+    if (importType === "usage" && !["csv", "xml"].includes(ext)) {
+      this._addResult({
+        type: "error",
+        filename: file.name,
+        serviceType,
+        importType,
         message: `Unsupported file type ".${ext}". Please use .csv or .xml.`,
       });
       return;
     }
 
-    // Reject files over the size limit before reading — avoids reading a huge
-    // file into memory only to have the backend reject it anyway.
     if (file.size > _MAX_FILE_BYTES) {
       this._addResult({
         type: "error",
         filename: file.name,
         serviceType,
-        message: `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). `
-               + `Maximum size is ${_MAX_FILE_MB} MB. `
-               + `Please download a smaller date range from your utility website.`,
+        importType,
+        message: `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is ${_MAX_FILE_MB} MB.`,
       });
       return;
     }
 
     // Show processing state
     zone.classList.add("processing");
-    const originalHint = zone.querySelector(".hint").textContent;
-    zone.querySelector(".hint").textContent = "Importing…";
+    const hintEl = zone.querySelector(".hint");
+    const originalHint = hintEl.textContent;
+    hintEl.textContent = "Importing…";
     const spinner = document.createElement("div");
     spinner.className = "spinner";
     zone.appendChild(spinner);
@@ -364,58 +474,109 @@ class GreenButtonEnergyPanel extends HTMLElement {
     try {
       const content = await this._readFileAsText(file);
 
-      // Guard against a disconnected WebSocket before sending
       if (!this._hass?.connection) {
-        throw new Error("Lost connection to Home Assistant. Please refresh the page and try again.");
+        throw new Error("Lost connection to Home Assistant. Please refresh and try again.");
       }
 
-      // Send to HA backend via WebSocket
-      const response = await this._hass.connection.sendMessagePromise({
-        type: "green_button_energy/import_file",
-        filename: file.name,
-        content: content,
-        service_type: serviceType,
-      });
+      let response;
 
-      if (response.success) {
-        if (response.rows_written === 0) {
-          this._addResult({
-            type: "warning",
-            filename: file.name,
-            serviceType,
-            message: "No new data — file is already fully imported (all rows already in the database).",
-            stats: response,
-          });
-        } else {
-          this._addResult({
-            type: "success",
-            filename: file.name,
-            serviceType,
-            message: "Import successful!",
-            stats: response,
-          });
-        }
-      } else {
-        this._addResult({
-          type: "error",
+      if (importType === "usage") {
+        response = await this._hass.connection.sendMessagePromise({
+          type: "green_button_energy/import_file",
           filename: file.name,
-          serviceType,
-          message: response.error || "Import failed.",
-          stats: response,
+          content: content,
+          service_type: serviceType,
         });
+        this._handleUsageResponse(response, file.name, serviceType);
+      } else {
+        response = await this._hass.connection.sendMessagePromise({
+          type: "green_button_energy/import_billing",
+          filename: file.name,
+          content: content,
+          service_type: serviceType,
+        });
+        this._handleBillingResponse(response, file.name, serviceType);
       }
+
     } catch (err) {
       const msg = err?.message || String(err) || "Unknown connection error.";
       this._addResult({
         type: "error",
         filename: file.name,
         serviceType,
+        importType,
         message: `Error: ${msg}`,
       });
     } finally {
       zone.classList.remove("processing");
-      zone.querySelector(".hint").textContent = originalHint;
+      hintEl.textContent = originalHint;
       spinner.remove();
+    }
+  }
+
+  _handleUsageResponse(response, filename, serviceType) {
+    if (response.success) {
+      if (response.rows_written === 0) {
+        this._addResult({
+          type: "warning",
+          filename,
+          serviceType,
+          importType: "usage",
+          message: "No new data — file is already fully imported.",
+          stats: response,
+        });
+      } else {
+        this._addResult({
+          type: "success",
+          filename,
+          serviceType,
+          importType: "usage",
+          message: "Import successful!",
+          stats: response,
+        });
+      }
+    } else {
+      this._addResult({
+        type: "error",
+        filename,
+        serviceType,
+        importType: "usage",
+        message: response.error || "Import failed.",
+        stats: response,
+      });
+    }
+  }
+
+  _handleBillingResponse(response, filename, serviceType) {
+    if (response.success) {
+      if (response.rows_written === 0) {
+        this._addResult({
+          type: "warning",
+          filename,
+          serviceType,
+          importType: "billing",
+          message: "No new billing data — all cycles already imported.",
+          stats: response,
+        });
+      } else {
+        this._addResult({
+          type: "success",
+          filename,
+          serviceType,
+          importType: "billing",
+          message: "Billing import successful!",
+          stats: response,
+        });
+      }
+    } else {
+      this._addResult({
+        type: "error",
+        filename,
+        serviceType,
+        importType: "billing",
+        message: response.error || "Billing import failed.",
+        stats: response,
+      });
     }
   }
 
@@ -430,8 +591,8 @@ class GreenButtonEnergyPanel extends HTMLElement {
 
   _addResult(result) {
     result.timestamp = new Date().toLocaleTimeString();
-    this._results.unshift(result); // newest first
-    if (this._results.length > 20) this._results.pop(); // keep last 20
+    this._results.unshift(result);
+    if (this._results.length > 30) this._results.pop();
     this._refreshResults();
   }
 
@@ -454,24 +615,32 @@ class GreenButtonEnergyPanel extends HTMLElement {
 
     list.innerHTML = this._results
       .map((r) => {
-        const statsHtml =
-          r.stats && r.stats.rows_written > 0
-            ? `
+        let statsHtml = "";
+
+        if (r.importType === "usage" && r.stats && r.stats.rows_written > 0) {
+          statsHtml = `
             <div style="margin-top:6px">
               <span class="stat">📥 ${r.stats.rows_written} rows written</span>
               <span class="stat">📊 ${r.stats.new_usage?.toFixed(4)} ${r.stats.unit}</span>
               <span class="stat">🕐 through ${r.stats.newest_time || "—"}</span>
-            </div>`
-            : "";
+            </div>`;
+        } else if (r.importType === "billing" && r.stats && r.stats.rows_written > 0) {
+          statsHtml = `
+            <div style="margin-top:6px">
+              <span class="stat">📅 ${r.stats.cycles_imported} billing cycles</span>
+              <span class="stat">💰 $${r.stats.new_cost?.toFixed(2)}</span>
+              <span class="stat">🕐 through ${r.stats.newest_time || "—"}</span>
+            </div>`;
+        }
+
+        const badge = r.importType === "billing" ? "billing" : r.serviceType;
 
         return `
           <div class="result-card ${r.type}">
             <div class="result-title">
               ${icons[r.type]}
               ${this._esc(r.filename)}
-              <span style="font-weight:400;color:var(--secondary-text-color)">
-                (${r.serviceType})
-              </span>
+              <span class="result-badge">${badge}</span>
             </div>
             <div class="result-detail">
               ${this._esc(r.message)}

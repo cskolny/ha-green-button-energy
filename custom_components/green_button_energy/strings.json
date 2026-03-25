@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Green Button Energy Import",
-        "description": "Click Submit to set up the Green Button Energy Import integration.\n\nAfter setup, a **Green Button Import** panel will appear in your sidebar where you can drag and drop your downloaded CSV or XML files to import your usage data.\n\nSupported utilities: RG&E, NYSEG, Central Maine Power, United Illuminating, Connecticut Natural Gas, Southern Connecticut Gas, and Berkshire Gas."
+        "description": "Click Submit to set up the Green Button Energy Import integration.\n\nAfter setup, a **Green Button Import** panel will appear in your sidebar where you can drag and drop your downloaded CSV or XML files to import your usage data, and billing CSVs to import monthly cost data.\n\nSupported utilities: RG&E, NYSEG, Central Maine Power, United Illuminating, Connecticut Natural Gas, Southern Connecticut Gas, and Berkshire Gas."
       }
     },
     "abort": {
