@@ -51,7 +51,7 @@ at 2026-02-24 05:00 UTC.  The new cycle starts at 2026-02-25 05:00 UTC.
 Local day 2026-02-24 (Eastern) spans 2026-02-24 05:00 to
 2026-02-25 05:00 UTC -- entirely in the gap, showing $0.00.
 
-Fix: ``parse_billing_file`` accepts a ``last_effective_end`` timestamp
+Fix: ``parse_billing_file`` accepts a ``last_effective_end`` parameter
 (stored after each import) indicating where the DB chain actually ends.
 If the first new cycle's start is after ``last_effective_end``, that
 cycle's effective start is moved back to ``last_effective_end``, filling
@@ -418,10 +418,7 @@ def _parse_billing_csv(
 
     for i, (start_utc, end_utc, cost) in enumerate(valid_cycles):
         # --- Intra-file gap fill: extend end to next cycle's start ---
-        if i + 1 < len(valid_cycles):
-            effective_end = valid_cycles[i + 1][0]
-        else:
-            effective_end = end_utc
+        effective_end = valid_cycles[i + 1][0] if i + 1 < len(valid_cycles) else end_utc
 
         # --- Inter-import gap fill: extend start back to previous DB end ---
         # If this is the first new cycle and there's a gap between where

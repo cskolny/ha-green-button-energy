@@ -55,13 +55,13 @@ from homeassistant.helpers.storage import Store
 from .billing_parser import BillingParseResult, parse_billing_file
 from .const import (
     DOMAIN,
-    ELECTRIC_COST_KEY,
     ELECTRIC_COST_END_KEY,
+    ELECTRIC_COST_KEY,
     ELECTRIC_COST_TIME_KEY,
     ELECTRIC_SENSOR_KEY,
     ELECTRIC_TIME_KEY,
-    GAS_COST_KEY,
     GAS_COST_END_KEY,
+    GAS_COST_KEY,
     GAS_COST_TIME_KEY,
     GAS_SENSOR_KEY,
     GAS_TIME_KEY,
@@ -649,7 +649,9 @@ class GreenButtonCostSensor(SensorEntity):
                 self._data.get(self._total_key, 0.0),
             )
 
-            self._send_success_notification(file_path, written_cost, result.cycles_imported, newest_written)
+            self._send_success_notification(
+                file_path, written_cost, result.cycles_imported, newest_written
+            )
 
     # ------------------------------------------------------------------
     # Statistics import
