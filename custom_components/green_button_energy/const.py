@@ -12,6 +12,17 @@ ELECTRIC_SENSOR_KEY = "electric_total"
 GAS_SENSOR_KEY = "gas_total"
 ELECTRIC_TIME_KEY = "last_electric_time"
 GAS_TIME_KEY = "last_gas_time"
+
+# Billing sensor storage keys
+ELECTRIC_COST_KEY = "electric_cost_total"
+GAS_COST_KEY = "gas_cost_total"
+ELECTRIC_COST_TIME_KEY = "last_electric_cost_time"
+GAS_COST_TIME_KEY = "last_gas_cost_time"
+# Tracks where the billing DB chain actually ends (effective end of last written
+# cycle, not its CSV start).  Used to fill inter-import gaps on the next import.
+ELECTRIC_COST_END_KEY = "last_electric_cost_effective_end"
+GAS_COST_END_KEY = "last_gas_cost_effective_end"
+
 LAST_FILE_KEY = "last_processed_file"
 
 # ── Sensor display names and unique identifiers ────────────────────────────
@@ -20,10 +31,17 @@ SENSOR_GAS_NAME = "Avangrid Gas Total"
 SENSOR_ELECTRIC_UID = f"{DOMAIN}_electric_total"
 SENSOR_GAS_UID = f"{DOMAIN}_gas_total"
 
+# Billing sensors
+SENSOR_ELECTRIC_COST_NAME = "Avangrid Electric Cost"
+SENSOR_GAS_COST_NAME = "Avangrid Gas Cost"
+SENSOR_ELECTRIC_COST_UID = f"{DOMAIN}_electric_cost"
+SENSOR_GAS_COST_UID = f"{DOMAIN}_gas_cost"
+
 # ── Units of measurement ───────────────────────────────────────────────────
 UNIT_ELECTRIC = "kWh"
 # Therms ≈ CCF; HA's gas device_class requires a volume unit, so we store as CCF.
 UNIT_GAS = "CCF"
+UNIT_COST = "USD"
 
 # ── Accepted file extensions ───────────────────────────────────────────────
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".csv", ".xml"})

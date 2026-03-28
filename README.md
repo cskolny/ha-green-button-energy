@@ -7,10 +7,11 @@
 [![Lint](https://github.com/cskolny/ha-green-button-energy/actions/workflows/lint.yml/badge.svg)](https://github.com/cskolny/ha-green-button-energy/actions/workflows/lint.yml)
 [![Validate](https://github.com/cskolny/ha-green-button-energy/actions/workflows/validate.yml/badge.svg)](https://github.com/cskolny/ha-green-button-energy/actions/workflows/validate.yml)
 
-Import your **Avangrid utility** smart meter usage data directly into the
+Import your **Avangrid utility** smart meter usage data and monthly billing costs directly into the
 [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/)
-via a drag-and-drop sidebar panel. Supports both **electric** (kWh) and
-**gas** (CCF/therms) usage from Green Button CSV and XML exports.
+via a drag-and-drop sidebar panel. Supports **electric** (kWh) and
+**gas** (CCF/therms) usage from Green Button CSV and XML exports, plus
+**monthly billing CSV** exports for actual cost tracking.
 
 ![Energy Dashboard](screenshots/energy-dashboard.png)
 
@@ -37,6 +38,7 @@ data exports:
 
 - ⚡ **Drag-and-drop import** — dedicated sidebar panel, no command line needed
 - 📊 **Full historical backfill** — imports all hourly data with correct past timestamps into the Energy Dashboard
+- 💰 **Monthly billing import** — imports actual dollar costs from billing CSVs so the Energy Dashboard shows your real spend instead of a static price estimate
 - 🔁 **Safe re-imports** — duplicate rows are automatically skipped; overlapping files can be re-dropped safely
 - 🛡️ **Live data protection** — imports are clipped at the last existing stat boundary, preventing overwrites of live sensor data and the negative consumption values they would cause
 - 📁 **CSV and XML support** — works with both Avangrid Opower CSV exports and standard Green Button ESPI XML exports
@@ -48,19 +50,29 @@ data exports:
 
 ## Sensors Created
 
+### Usage Sensors
+
 | Sensor | Entity ID | Unit | Device Class | State Class |
 |--------|-----------|------|-------------|-------------|
 | Avangrid Electric Total | `sensor.avangrid_electric_total` | kWh | `energy` | `total_increasing` |
 | Avangrid Gas Total | `sensor.avangrid_gas_total` | CCF | `gas` | `total_increasing` |
 
-Both sensors are automatically available in **Settings → Energy** for the
-Electricity grid and Gas consumption sections.
+### Billing Cost Sensors
+
+| Sensor | Entity ID | Unit | Device Class | State Class |
+|--------|-----------|------|-------------|-------------|
+| Avangrid Electric Cost | `sensor.avangrid_electric_cost` | USD | `monetary` | `total_increasing` |
+| Avangrid Gas Cost | `sensor.avangrid_gas_cost` | USD | `monetary` | `total_increasing` |
+
+The usage sensors are automatically available in **Settings → Energy** for the
+Electricity grid and Gas consumption sections. The cost sensors can be selected
+as the cost source for each commodity — see [Configuring Billing Costs](#configuring-billing-costs).
 
 ---
 
 ## Requirements
 
-- Home Assistant **2025.1 or later** (tested on 2025.3)
+- Home Assistant **2025.1 or later** (tested on 2026.3)
 - An Avangrid utility account with smart meter data and Green Button export access
 - File access to your HA config directory (for initial install only)
 
@@ -97,6 +109,7 @@ Electricity grid and Gas consumption sections.
    ├── translations/
    │   └── en.json
    ├── __init__.py
+   ├── billing_parser.py
    ├── config_flow.py
    ├── const.py
    ├── manifest.json
@@ -142,8 +155,7 @@ The **Energy Import** panel will appear in your sidebar immediately.
 > **Note:** In the Gas consumption picker, both `Avangrid Electric Total` and
 > `Avangrid Gas Total` may appear as options. This is a quirk of HA's Energy
 > Dashboard UI — it lists all `total_increasing` sensors regardless of
-> `device_class`. Select `Avangrid Gas Total` here; selecting the electric
-> sensor in the gas section would produce incorrect readings.
+> `device_class`. Select `Avangrid Gas Total` here.
 
 ---
 
@@ -152,9 +164,18 @@ The **Energy Import** panel will appear in your sidebar immediately.
 ### Downloading Your Data
 
 Log in to your Avangrid utility website and navigate to your energy usage or
-account section. Look for a **Green Button** or **Download My Data** option
-and select your desired date range. Download as **CSV** or **Green Button XML**.
-Download a separate file for electric and gas if needed.
+account section. Look for a **Green Button** or **Download My Data** option.
+Two types of exports are available and supported by this integration:
+
+**Hourly usage data (CSV or XML)**
+Select your desired date range and download as CSV or Green Button XML.
+This contains one row per hour and is what populates the Energy Dashboard's
+historical hourly charts.
+
+**Monthly billing data (CSV)**
+Download billing history as CSV. This contains one row per billing cycle
+(typically 28–33 days) with the total kWh/therms and the dollar amount billed.
+This is what populates the Energy Dashboard's cost view.
 
 | Utility | Website |
 |---------|---------|
@@ -166,45 +187,84 @@ Download a separate file for electric and gas if needed.
 | Southern Connecticut Gas | [soconngas.com](https://www.soconngas.com) |
 | Berkshire Gas | [berkshiregas.com](https://www.berkshiregas.com) |
 
-> **Tip:** For initial historical backfill, download in 12-month chunks working
-> backwards from today. Overlapping date ranges between files are handled safely.
+> **Tip:** For initial historical backfill, download hourly data in 12-month chunks
+> working backwards from today. Overlapping date ranges between files are handled safely.
 
 ### Importing Files
 
 ![Import Panel](screenshots/import-panel.png)
 
+The sidebar panel has two sections:
+
+**Hourly Usage Data** — drag your electric or gas CSV/XML here to populate the
+Energy Dashboard's historical hourly consumption charts.
+
+**Monthly Billing Data** — drag your electric or gas billing CSV here to populate
+the Energy Dashboard's cost view with your actual billed amounts.
+
 1. Open **Energy Import** in the Home Assistant sidebar
-2. Drag your electric CSV or XML onto the ⚡ **Electric Usage** zone
-3. Wait for the success notification confirming the row count and usage total
-4. Drag your gas CSV or XML onto the 🔥 **Gas Usage** zone
-5. The Energy Dashboard will populate with historical hourly data immediately
+2. Drag your electric CSV or XML onto the ⚡ **Electric Usage** zone (or click to browse)
+3. Drag your gas CSV or XML onto the 🔥 **Gas Usage** zone
+4. Optionally drag your electric billing CSV onto the 🧾 **Electric Billing** zone
+5. Optionally drag your gas billing CSV onto the 🧾 **Gas Billing** zone
 
-### Success Notification
+Each import reports success or failure immediately in the Import History log below the drop zones.
 
-After a successful import the notification shows:
+### Success Notifications
+
+After a successful **usage** import the notification shows:
 
 - **Rows written** — rows actually committed to the long-term statistics database
 - **New usage** — total energy/gas in the imported rows
-- **Running total** — cumulative sensor total since integration was set up
+- **Running total** — cumulative sensor total since the integration was set up
 - **Data through** — the newest timestamp actually written to the DB
+
+After a successful **billing** import the notification shows:
+
+- **Billing cycles imported** — number of monthly billing cycles written
+- **New cost** — total dollar amount imported
+- **Running total** — cumulative cost total since first billing import
+- **Billing data through** — the start date of the most recent billing cycle written
+
+---
+
+## Configuring Billing Costs
+
+After importing billing data, wire the cost sensors into the Energy Dashboard:
+
+1. Go to **Settings → Energy**
+2. Under **Electricity grid** → click the pencil icon next to `Avangrid Electric Total`
+3. Change **"Use a static price"** to **"Use an entity tracking the total cost"**
+4. Select **Avangrid Electric Cost** from the dropdown
+5. Click **Update**
+6. Repeat for **Gas consumption** → select **Avangrid Gas Cost**
+
+The Energy Dashboard will then show your actual monthly bills spread evenly
+across each billing period, rather than a static per-kWh estimate.
+
+> **How billing costs are spread:** Each billing cycle's total cost is divided
+> evenly across all hours in the cycle. For example, a $85.15 bill covering a
+> 32-day (768-hour) period is recorded as $0.111/hour for each of those 768
+> hours. This matches the format HA's statistics database expects for cost sensors.
 
 ### Weekly Workflow
 
 Avangrid utilities update smart meter data with a ~48-hour delay. A typical
 weekly routine:
 
-1. Download the past week's CSV or XML from your utility website
+1. Download the past week's hourly CSV or XML from your utility website
 2. Drop the electric file into the ⚡ zone
 3. Drop the gas file into the 🔥 zone
-4. Done — new data appears in the Energy Dashboard
+4. Once a month (after your bill arrives), download the billing CSV and drop it into the 🧾 zones
 
-Duplicate rows from overlapping date ranges are automatically skipped.
+Duplicate rows from overlapping date ranges are automatically skipped for
+both usage and billing imports.
 
 ---
 
 ## Supported File Formats
 
-### CSV (Opower Export)
+### Hourly Usage CSV (Opower Export)
 
 | Column | Description |
 |--------|-------------|
@@ -212,7 +272,21 @@ Duplicate rows from overlapping date ranges are automatically skipped.
 | `Usage` | Energy or gas usage for the interval |
 | `Type` | `electric` or `gas` |
 
-### XML (Green Button ESPI)
+### Monthly Billing CSV
+
+| Column | Description |
+|--------|-------------|
+| `Start Time` | Billing cycle start date |
+| `End Time` | Billing cycle end date |
+| `Usage` | Total kWh or therms for the billing period |
+| `Costs` | Dollar amount billed (e.g. `85.15`) |
+| `Type` | `electric` or `gas` |
+
+Both the hourly usage and monthly billing exports from Avangrid share the same
+column layout — the integration determines how to parse the file based on which
+drop zone you use.
+
+### XML (Green Button ESPI) — usage only
 
 | Service | ServiceCategory kind | uom | Conversion |
 |---------|---------------------|-----|-----------|
@@ -231,30 +305,25 @@ The parser auto-detects the service type and unit conversion from the
 ```
 Browser (HA Frontend)          HA Backend (Python)
 ─────────────────────          ───────────────────
-Energy Import Panel            WebSocket Handler
+Energy Import Panel            WebSocket Handlers
   │                              │
   │  FileReader.readAsText()     │
   │  → file content (UTF-8)      │
   │                              │
-  └──── WebSocket message ──────►│
-         type: green_button      │
-         _energy/import_file     │
+  │  Usage file drop:            │
+  └──── import_file ────────────►│
+                                 │  parser.py (CSV or XML)
+                                 │  → hourly_readings[]
+                                 │  → _import_statistics()
+                                 │  → recorder DB (kWh/CCF)
                                  │
-                          Write temp file
-                                 │
-                          parser.py
-                          (CSV or XML)
-                                 │
-                          ParseResult
-                          (hourly_readings[])
-                                 │
-                          _import_statistics()
-                          • query last existing stat
-                          • build cumulative sums
-                          • append only new rows
-                                 │
-                          recorder.async_import_statistics()
-                          (writes historical stats to DB)
+  │  Billing file drop:          │
+  └──── import_billing ─────────►│
+                                 │  billing_parser.py (CSV)
+                                 │  → hourly_costs[]
+                                 │     (cost spread per hour)
+                                 │  → _import_cost_statistics()
+                                 │  → recorder DB (USD)
                                  │
                           persistent notification
 ```
@@ -265,13 +334,23 @@ Simply updating a sensor's state only records a single data point at the
 current time. The Energy Dashboard reads from HA's **long-term statistics**
 database, which stores hourly aggregates. `async_import_statistics` writes
 directly into this database with the correct historical timestamps, enabling
-full backfill of months of hourly data in a single import.
+full backfill of months of hourly data in a single import. This applies to
+both usage and billing cost data.
+
+### How Billing Cost Spreading Works
+
+HA's statistics database stores one record per hour. Monthly billing cycles
+don't map to individual hours, so the integration spreads each cycle's total
+cost evenly: `cost_per_hour = total_bill / hours_in_cycle`. This produces a
+smooth cumulative cost curve that HA's Energy Dashboard reads correctly.
+The total dollar amount over any billing period is preserved exactly.
 
 ### Duplicate Prevention
 
 Each successful import stores the timestamp of the most recently **written**
 stat in HA's `.storage` directory (`green_button_energy_data`). On subsequent
-imports, any row at or before this timestamp is skipped.
+imports, any row at or before this timestamp is skipped. Usage and billing
+imports maintain separate cursors so they don't interfere with each other.
 
 ### Live Data Protection
 
@@ -279,13 +358,13 @@ When importing a historical file on a day when HA has already recorded live
 sensor stats, a naive import would overwrite those stats with incorrectly
 calculated cumulative sums, producing negative consumption values in the Energy
 Dashboard. The integration prevents this by appending only rows that come after
-the current end of the database chain. The count of skipped rows is reported in
-the success notification.
+the current end of the database chain.
 
 ### File Size Limit
 
 Files larger than **10 MB** are rejected before any processing occurs. Green
 Button exports for a full year of hourly data are typically well under 2 MB.
+Monthly billing CSVs are typically a few KB.
 
 ---
 
@@ -293,8 +372,10 @@ Button exports for a full year of hourly data are typically well under 2 MB.
 
 If you need to wipe all data and start over:
 
-1. **Delete long-term statistics** — Developer Tools → Statistics → find both
-   Avangrid sensors → delete all statistics
+1. **Delete long-term statistics** — Developer Tools → Statistics → find the
+   Avangrid sensors → delete all statistics. There are now four sensors:
+   `avangrid_electric_total`, `avangrid_gas_total`,
+   `avangrid_electric_cost`, `avangrid_gas_cost`.
 2. **Purge entity history** — Developer Tools → Actions:
    ```yaml
    action: recorder.purge_entities
@@ -302,6 +383,8 @@ If you need to wipe all data and start over:
      entity_id:
        - sensor.avangrid_electric_total
        - sensor.avangrid_gas_total
+       - sensor.avangrid_electric_cost
+       - sensor.avangrid_gas_cost
      keep_days: 0
    ```
 3. **Delete integration storage:**
@@ -326,6 +409,13 @@ file. Download a more recent date range from your utility website, or delete
 Follow the full reset procedure above and reimport. As of v1.3.0 the
 integration appends strictly after the current end of the DB chain, so this
 cannot occur with files imported fresh after a reset.
+
+### Billing import shows wrong cost sensor in Energy Dashboard
+
+Make sure you imported the billing CSV into the correct zone (🧾 Electric Billing
+vs 🧾 Gas Billing) and that you selected the matching sensor in Settings → Energy.
+`Avangrid Electric Cost` is for the electricity grid section; `Avangrid Gas Cost`
+is for the gas consumption section.
 
 ### Sensor doesn't appear in Energy Dashboard gas section
 

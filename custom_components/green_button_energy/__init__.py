@@ -4,6 +4,9 @@ Imports hourly smart-meter usage data from Avangrid utility Green Button
 CSV/XML exports into the Home Assistant Energy Dashboard via a drag-and-drop
 sidebar panel.
 
+Also supports importing monthly billing CSV data for cost tracking in the
+Energy Dashboard.
+
 Supported utilities: RG&E, NYSEG, Central Maine Power, United Illuminating,
 Connecticut Natural Gas, Southern Connecticut Gas, Berkshire Gas.
 
@@ -34,7 +37,7 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 
 if TYPE_CHECKING:
-    from .sensor import GreenButtonSensor
+    from .sensor import GreenButtonCostSensor, GreenButtonSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +60,7 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Register the WebSocket command once at HA startup.
+    """Register the WebSocket commands once at HA startup.
 
     Args:
         hass: The Home Assistant instance.
@@ -68,7 +71,8 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """
     hass.data.setdefault(DOMAIN, {})
     async_register_command(hass, ws_handle_import_file)
-    _LOGGER.info("[%s] Setup complete — WebSocket command registered.", DOMAIN)
+    async_register_command(hass, ws_handle_import_billing)
+    _LOGGER.info("[%s] Setup complete — WebSocket commands registered.", DOMAIN)
     return True
 
 
@@ -152,7 +156,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket command handler
+# WebSocket command — usage file import
 # ---------------------------------------------------------------------------
 
 
@@ -305,6 +309,146 @@ async def ws_handle_import_file(
         await hass.async_add_executor_job(os.unlink, tmp_path)
 
 
+# ---------------------------------------------------------------------------
+# WebSocket command — billing file import
+# ---------------------------------------------------------------------------
+
+
+@websocket_command(
+    {
+        vol.Required("type"): "green_button_energy/import_billing",
+        vol.Required("filename"): str,
+        vol.Required("content"): str,
+        vol.Required("service_type"): vol.In(["electric", "gas"]),
+    },
+)
+@async_response
+async def ws_handle_import_billing(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Handle an ``import_billing`` WebSocket message from the sidebar panel.
+
+    Accepts a monthly billing CSV, writes it to a temp file, and delegates
+    parsing to the appropriate :class:`~.sensor.GreenButtonCostSensor`.
+
+    Args:
+        hass: The Home Assistant instance.
+        connection: The active WebSocket connection.
+        msg: The validated message dict from the frontend.
+    """
+    msg_id = msg["id"]
+    filename: str = pathlib.Path(msg["filename"]).name
+    content: str = msg["content"]
+    service_type: str = msg["service_type"]
+
+    content_bytes = len(content.encode("utf-8"))
+    if content_bytes > _MAX_FILE_BYTES:
+        connection.send_error(
+            msg_id,
+            "file_too_large",
+            f"File '{filename}' is too large ({content_bytes // 1024} KB). "
+            f"Maximum allowed size is {_MAX_FILE_BYTES // (1024 * 1024)} MB.",
+        )
+        return
+
+    ext = pathlib.Path(filename).suffix.lower()
+    if ext != ".csv":
+        connection.send_error(
+            msg_id,
+            "invalid_format",
+            f"Billing imports only support .csv files; got '{ext}'.",
+        )
+        return
+
+    _LOGGER.info(
+        "[%s] Billing import request: file='%s', type='%s', size=%d bytes",
+        DOMAIN,
+        filename,
+        service_type,
+        content_bytes,
+    )
+
+    cost_sensor = _find_cost_sensor(hass, service_type)
+    if cost_sensor is None:
+        connection.send_error(
+            msg_id,
+            "sensor_not_found",
+            f"No Green Button cost sensor found for service_type='{service_type}'. "
+            "Is the integration configured under Settings → Devices & Services?",
+        )
+        return
+
+    def _write_temp() -> str:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".csv",
+            encoding="utf-8",
+            delete=False,
+        ) as tmp:
+            tmp.write(content)
+            return tmp.name
+
+    tmp_path = await hass.async_add_executor_job(_write_temp)
+
+    try:
+        await cost_sensor.async_process_billing_file(tmp_path)
+        result = cost_sensor.last_result
+        rows_written = cost_sensor.last_rows_written
+
+        if result is None:
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "cycles_imported": 0,
+                    "rows_written": 0,
+                    "new_cost": 0.0,
+                    "newest_time": "",
+                },
+            )
+        elif result.errors:
+            connection.send_result(
+                msg_id,
+                {
+                    "success": False,
+                    "error": "; ".join(result.errors),
+                    "cycles_imported": 0,
+                    "rows_written": 0,
+                },
+            )
+        elif rows_written == 0:
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "cycles_imported": result.cycles_imported,
+                    "rows_written": 0,
+                    "new_cost": 0.0,
+                    "newest_time": result.newest_time,
+                },
+            )
+        else:
+            connection.send_result(
+                msg_id,
+                {
+                    "success": True,
+                    "cycles_imported": result.cycles_imported,
+                    "rows_written": rows_written,
+                    "new_cost": round(result.new_cost, 2),
+                    "newest_time": result.newest_time,
+                },
+            )
+    finally:
+        await hass.async_add_executor_job(os.unlink, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Sensor lookup helpers
+# ---------------------------------------------------------------------------
+
+
 def _find_sensor(hass: HomeAssistant, service_type: str) -> GreenButtonSensor | None:
     """Locate the :class:`~.sensor.GreenButtonSensor` for *service_type*.
 
@@ -322,6 +466,26 @@ def _find_sensor(hass: HomeAssistant, service_type: str) -> GreenButtonSensor | 
     for entry_data in domain_data.values():
         if isinstance(entry_data, dict):
             sensor: GreenButtonSensor | None = entry_data.get(service_type.lower())
+            if sensor is not None:
+                return sensor
+    return None
+
+
+def _find_cost_sensor(hass: HomeAssistant, service_type: str) -> GreenButtonCostSensor | None:
+    """Locate the :class:`~.sensor.GreenButtonCostSensor` for *service_type*.
+
+    Args:
+        hass: The Home Assistant instance.
+        service_type: ``"electric"`` or ``"gas"``.
+
+    Returns:
+        The matching cost sensor instance, or ``None`` if not found.
+    """
+    key = f"{service_type.lower()}_cost"
+    domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
+    for entry_data in domain_data.values():
+        if isinstance(entry_data, dict):
+            sensor: GreenButtonCostSensor | None = entry_data.get(key)
             if sensor is not None:
                 return sensor
     return None
