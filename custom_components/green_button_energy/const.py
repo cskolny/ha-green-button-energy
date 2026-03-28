@@ -18,6 +18,10 @@ ELECTRIC_COST_KEY = "electric_cost_total"
 GAS_COST_KEY = "gas_cost_total"
 ELECTRIC_COST_TIME_KEY = "last_electric_cost_time"
 GAS_COST_TIME_KEY = "last_gas_cost_time"
+# Tracks where the billing DB chain actually ends (effective end of last written
+# cycle, not its CSV start).  Used to fill inter-import gaps on the next import.
+ELECTRIC_COST_END_KEY = "last_electric_cost_effective_end"
+GAS_COST_END_KEY = "last_gas_cost_effective_end"
 
 LAST_FILE_KEY = "last_processed_file"
 

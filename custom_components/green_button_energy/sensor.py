@@ -56,10 +56,12 @@ from .billing_parser import BillingParseResult, parse_billing_file
 from .const import (
     DOMAIN,
     ELECTRIC_COST_KEY,
+    ELECTRIC_COST_END_KEY,
     ELECTRIC_COST_TIME_KEY,
     ELECTRIC_SENSOR_KEY,
     ELECTRIC_TIME_KEY,
     GAS_COST_KEY,
+    GAS_COST_END_KEY,
     GAS_COST_TIME_KEY,
     GAS_SENSOR_KEY,
     GAS_TIME_KEY,
@@ -139,6 +141,7 @@ async def async_setup_entry(
         service_type="electric",
         total_key=ELECTRIC_COST_KEY,
         time_key=ELECTRIC_COST_TIME_KEY,
+        end_key=ELECTRIC_COST_END_KEY,
         name=SENSOR_ELECTRIC_COST_NAME,
         unique_id=SENSOR_ELECTRIC_COST_UID,
     )
@@ -150,6 +153,7 @@ async def async_setup_entry(
         service_type="gas",
         total_key=GAS_COST_KEY,
         time_key=GAS_COST_TIME_KEY,
+        end_key=GAS_COST_END_KEY,
         name=SENSOR_GAS_COST_NAME,
         unique_id=SENSOR_GAS_COST_UID,
     )
@@ -517,10 +521,14 @@ class GreenButtonCostSensor(SensorEntity):
     Follows the same no-live-state design as :class:`GreenButtonSensor`:
     ``native_value`` is permanently ``None`` and ``async_write_ha_state()``
     is never called, to prevent recorder boundary stat poisoning.
+
+    ``state_class`` is ``TOTAL`` (not ``TOTAL_INCREASING``) because HA's
+    sensor validation rejects ``TOTAL_INCREASING`` for ``monetary``
+    device class — monetary values can decrease (credits, refunds).
     """
 
     _attr_should_poll = False
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = False
 
     def __init__(
@@ -531,6 +539,7 @@ class GreenButtonCostSensor(SensorEntity):
         service_type: str,
         total_key: str,
         time_key: str,
+        end_key: str,
         name: str,
         unique_id: str,
     ) -> None:
@@ -543,6 +552,9 @@ class GreenButtonCostSensor(SensorEntity):
             service_type: ``"electric"`` or ``"gas"``.
             total_key: Storage key for the cumulative cost total (USD).
             time_key: Storage key for the last-imported billing cycle START.
+            end_key: Storage key for the effective end of the last written
+                cycle -- where the DB chain actually ends.  Used to fill
+                inter-import gaps on the next import.
             name: Human-readable sensor name shown in the UI.
             unique_id: Stable unique ID for entity registry persistence.
         """
@@ -552,6 +564,7 @@ class GreenButtonCostSensor(SensorEntity):
         self._service_type = service_type
         self._total_key = total_key
         self._time_key = time_key
+        self._end_key = end_key
         self._attr_native_unit_of_measurement = UNIT_COST
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_name = name
@@ -570,7 +583,10 @@ class GreenButtonCostSensor(SensorEntity):
 
         Each billing cycle's cost is spread evenly across all hours in the
         cycle so the Energy Dashboard's cost-per-kWh view is populated
-        correctly.
+        correctly.  Inter-import gaps (days between the end of the previous
+        import's last cycle and the start of the new first cycle) are filled
+        by extending the new cycle's effective start back to the stored
+        ``last_effective_end``.
 
         Args:
             file_path: Absolute path to the temporary billing CSV file.
@@ -580,16 +596,18 @@ class GreenButtonCostSensor(SensorEntity):
 
         async with self._processing_lock:
             last_time: str = self._data.get(self._time_key, "")
+            last_effective_end: str = self._data.get(self._end_key, "")
 
             _LOGGER.debug(
-                "[%s] Processing billing '%s' (last_time='%s')",
+                "[%s] Processing billing '%s' (last_time='%s', last_effective_end='%s')",
                 self._attr_name,
                 file_path,
                 last_time or "none",
+                last_effective_end or "none",
             )
 
             result: BillingParseResult = await self.hass.async_add_executor_job(
-                parse_billing_file, file_path, self._service_type, last_time
+                parse_billing_file, file_path, self._service_type, last_time, last_effective_end
             )
             self.last_result = result
 
@@ -617,6 +635,8 @@ class GreenButtonCostSensor(SensorEntity):
                 float(self._data.get(self._total_key, 0.0)) + written_cost, 4
             )
             self._data[self._time_key] = newest_written
+            if result.last_effective_end:
+                self._data[self._end_key] = result.last_effective_end
             await self._store.async_save(self._data)
 
             _LOGGER.info(
@@ -695,7 +715,7 @@ class GreenButtonCostSensor(SensorEntity):
             name=self._attr_name,
             source="recorder",
             statistic_id=self.entity_id,
-            unit_class="monetary",
+            unit_class=None,  # "monetary" is not a valid recorder unit_class in HA 2026.x
             unit_of_measurement=UNIT_COST,
         )
 
