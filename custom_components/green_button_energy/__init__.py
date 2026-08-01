@@ -2,7 +2,7 @@
 
 Imports hourly smart-meter usage data from Avangrid utility Green Button
 CSV/XML exports into the Home Assistant Energy Dashboard via a drag-and-drop
-sidebar panel.
+sidebar panel, and/or automatically via a watched folder (see watcher.py).
 
 Also supports importing monthly billing CSV data for cost tracking in the
 Energy Dashboard.
@@ -35,6 +35,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .watcher import FolderWatcher
 
 if TYPE_CHECKING:
     from .sensor import GreenButtonCostSensor, GreenButtonSensor
@@ -52,6 +53,10 @@ _PANEL_URL = f"/{DOMAIN}_frontend"
 # Prevents memory pressure on resource-constrained hosts from oversized or
 # malformed uploads.  Must stay in sync with ``_MAX_FILE_BYTES`` in the JS.
 _MAX_FILE_BYTES = 10 * 1024 * 1024
+
+# Key under which the entry's FolderWatcher instance is stored inside its
+# hass.data[DOMAIN][entry.entry_id] dict, alongside the sensor instances.
+_WATCHER_KEY = "_watcher"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +82,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up sensors and register the sidebar panel from a config entry.
+    """Set up sensors, the sidebar panel, and the folder watcher from a config entry.
 
     Args:
         hass: The Home Assistant instance.
@@ -94,12 +99,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _async_register_panel(hass)
         hass.data[DOMAIN]["panel_registered"] = True
 
+    # Start the folder watcher now that the entry's sensors exist in
+    # hass.data[DOMAIN][entry.entry_id] (populated by sensor.async_setup_entry
+    # during async_forward_entry_setups above).
+    entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+    watcher = FolderWatcher(hass, entry_data)
+    await watcher.async_start()
+    entry_data[_WATCHER_KEY] = watcher
+
     _LOGGER.info("[%s] Config entry loaded: %s", DOMAIN, entry.entry_id)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry and clean up associated data.
+    """Stop the folder watcher, unload platforms, and clean up entry data.
 
     Args:
         hass: The Home Assistant instance.
@@ -108,6 +121,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Returns:
         ``True`` when all platforms unloaded successfully.
     """
+    domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
+    entry_data = domain_data.get(entry.entry_id)
+    if isinstance(entry_data, dict):
+        watcher = entry_data.get(_WATCHER_KEY)
+        if isinstance(watcher, FolderWatcher):
+            watcher.async_stop()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
