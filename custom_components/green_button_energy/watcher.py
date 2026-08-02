@@ -191,12 +191,16 @@ class FolderWatcher:
                 DOMAIN,
                 file_path.name,
             )
-            await self.hass.async_add_executor_job(self._move_file, file_path, WATCH_ERRORED_SUBDIR)
+            await self.hass.async_add_executor_job(
+                self._move_file, file_path, WATCH_ERRORED_SUBDIR
+            )
             return
 
         result = sensor.last_result
         destination = (
-            WATCH_ERRORED_SUBDIR if (result is None or not result.success) else WATCH_PROCESSED_SUBDIR
+            WATCH_ERRORED_SUBDIR
+            if (result is None or not result.success)
+            else WATCH_PROCESSED_SUBDIR
         )
         await self.hass.async_add_executor_job(self._move_file, file_path, destination)
 
