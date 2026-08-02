@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-02
+
+### Added
+- **Automatic folder import (watch folder)** — files can now be imported
+  without ever opening the sidebar panel. A new `watcher.py` module polls a
+  set of drop folders under `<config>/green_button_energy_watch/` every 60
+  seconds and imports any files found automatically:
+
+  ```
+  green_button_energy_watch/
+  ├── electric/            drop hourly electric CSV/XML here
+  ├── gas/                 drop hourly gas CSV/XML here
+  ├── electric_billing/    drop monthly electric billing CSV here
+  ├── gas_billing/         drop monthly gas billing CSV here
+  ├── processed/           successfully imported files land here
+  └── errored/             files that failed to parse land here
+  ```
+
+  Useful for scripted/scheduled downloads, syncing from another machine via
+  `rsync` or Syncthing, or any workflow where opening the Energy Import panel
+  isn't convenient.
+
+- **`watcher.py`** — new module containing `FolderWatcher`, which polls the
+  drop folders via `async_track_time_interval` and delegates directly to the
+  existing `GreenButtonSensor.async_process_file` /
+  `GreenButtonCostSensor.async_process_billing_file` methods, so watched
+  imports get identical deduplication, live-data clipping, statistics
+  writes, and persistent notifications as panel-driven imports.
+
+- **Six new constants** in `const.py`: `WATCH_DIR_NAME`,
+  `WATCH_PROCESSED_SUBDIR`, `WATCH_ERRORED_SUBDIR`,
+  `WATCH_SCAN_INTERVAL_SECONDS`.
+
+- **`tests/test_watcher.py`** — unit and integration-style tests covering
+  folder creation, extension filtering, file moves, successful/failed/
+  exception-raising imports, multi-folder scans, the reentrancy guard, and
+  watcher start/stop lifecycle.
+
+### Changed
+- `async_setup_entry` now starts a `FolderWatcher` immediately after the
+  sensor platform finishes loading (an initial scan runs right away, in
+  addition to the 60-second poll, so files dropped while HA was offline are
+  picked up on startup). `async_unload_entry` stops the watcher before
+  tearing down the config entry.
+- README updated with an "Automatic Folder Import (Watch Folder)" section,
+  updated architecture diagram, updated file structure, and new
+  troubleshooting entries.
+
+### Notes
+- No new dependency was introduced — the watcher uses HA's built-in polling
+  helper (`async_track_time_interval`) rather than `watchdog`/inotify, so it
+  works identically on every filesystem HA might see the config directory
+  through, including network shares, with `manifest.json`'s
+  `"requirements": []` unchanged.
+- The watch folder shares the same per-commodity deduplication cursor as the
+  sidebar panel (`.storage/green_button_energy_data`), so the two import
+  methods can be freely mixed without risk of duplicate or missing data.
+
 ## [1.7.0] - 2026-03-28
 
 ### Added
