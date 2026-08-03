@@ -9,8 +9,8 @@
 
 Import your **Avangrid utility** smart meter usage data and monthly billing costs directly into the
 [Home Assistant Energy Dashboard](https://www.home-assistant.io/docs/energy/)
-via a drag-and-drop sidebar panel. Supports **electric** (kWh) and
-**gas** (CCF/therms) usage from Green Button CSV and XML exports, plus
+via a drag-and-drop sidebar panel — or hands-free via an automatically watched folder. Supports
+**electric** (kWh) and **gas** (CCF/therms) usage from Green Button CSV and XML exports, plus
 **monthly billing CSV** exports for actual cost tracking.
 
 ![Energy Dashboard](screenshots/energy-dashboard.png)
@@ -37,6 +37,7 @@ data exports:
 ## Features
 
 - ⚡ **Drag-and-drop import** — dedicated sidebar panel, no command line needed
+- 📂 **Automatic folder import** — drop files into a watched folder on disk and they're imported automatically within 60 seconds, no browser session required
 - 📊 **Full historical backfill** — imports all hourly data with correct past timestamps into the Energy Dashboard
 - 💰 **Monthly billing import** — imports actual dollar costs from billing CSVs so the Energy Dashboard shows your real spend instead of a static price estimate
 - 🔁 **Safe re-imports** — duplicate rows are automatically skipped; overlapping files can be re-dropped safely
@@ -116,7 +117,8 @@ as the cost source for each commodity — see [Configuring Billing Costs](#confi
    ├── parser.py
    ├── sensor.py
    ├── storage.py
-   └── strings.json
+   ├── strings.json
+   └── watcher.py
    ```
 4. Restart Home Assistant
 
@@ -125,7 +127,8 @@ as the cost source for each commodity — see [Configuring Billing Costs](#confi
 ## Configuration
 
 No `configuration.yaml` changes are required. The sidebar panel registers
-itself automatically when the integration loads.
+itself automatically when the integration loads, and the watch folder
+described below is created automatically on first startup.
 
 ### Step 1 — Restart Home Assistant
 
@@ -143,7 +146,8 @@ docker compose restart homeassistant
 3. Search for **Green Button Energy Import**
 4. Click **Submit** — no additional configuration required
 
-The **Energy Import** panel will appear in your sidebar immediately.
+The **Energy Import** panel will appear in your sidebar immediately, and the
+watch folder at `config/green_button_energy_watch/` is created automatically.
 
 ### Step 3 — Add Sensors to the Energy Dashboard
 
@@ -190,7 +194,7 @@ This is what populates the Energy Dashboard's cost view.
 > **Tip:** For initial historical backfill, download hourly data in 12-month chunks
 > working backwards from today. Overlapping date ranges between files are handled safely.
 
-### Importing Files
+### Importing Files (Sidebar Panel)
 
 ![Import Panel](screenshots/import-panel.png)
 
@@ -210,9 +214,55 @@ the Energy Dashboard's cost view with your actual billed amounts.
 
 Each import reports success or failure immediately in the Import History log below the drop zones.
 
+### Automatic Folder Import (Watch Folder)
+
+As of v1.8.0, files can also be imported without opening a browser at all.
+On startup, the integration creates the following folder structure inside
+your HA config directory:
+
+```
+config/green_button_energy_watch/
+├── electric/           ← drop hourly electric CSV/XML here
+├── gas/                ← drop hourly gas CSV/XML here
+├── electric_billing/   ← drop monthly electric billing CSV here
+├── gas_billing/        ← drop monthly gas billing CSV here
+├── processed/          ← successfully imported files land here (timestamped)
+└── errored/            ← files that failed to parse land here (timestamped)
+```
+
+Drop a file into the matching folder and it's picked up automatically —
+no drag-and-drop into the browser required. This is useful for:
+
+- Scripted / scheduled downloads from your utility's site
+- Syncing from another machine via `rsync`, Syncthing, or a mounted network share
+- Any workflow where opening the Energy Import panel isn't convenient
+
+**How it works:**
+
+- The integration polls each folder every **60 seconds**, plus once
+  immediately on Home Assistant startup (so anything dropped while HA was
+  offline is picked up right away).
+- Each file is imported using the exact same parsing, deduplication,
+  statistics-writing, and notification logic as the sidebar panel — a
+  persistent notification confirms success or failure just like a panel
+  upload would.
+- After processing, the file is moved out of the drop folder — to
+  `processed/` on success, or `errored/` if it failed to parse — so nothing
+  is ever re-imported or re-scanned. Both destinations prefix the filename
+  with a timestamp so repeated drops of the same filename never collide.
+- Only `.csv` and `.xml` are accepted in the usage folders (`electric/`,
+  `gas/`); only `.csv` is accepted in the billing folders. Files with any
+  other extension are left in place and ignored.
+
+> **Note:** The watch folder and the sidebar panel share the same
+> deduplication cursor per commodity, so you can freely mix both import
+> methods — e.g. drag-and-drop your initial historical backfill through the
+> panel, then switch to the watch folder for your ongoing weekly imports.
+
 ### Success Notifications
 
-After a successful **usage** import the notification shows:
+After a successful **usage** import (via either the panel or the watch
+folder) the notification shows:
 
 - **Rows written** — rows actually committed to the long-term statistics database
 - **New usage** — total energy/gas in the imported rows
@@ -257,8 +307,12 @@ weekly routine:
 3. Drop the gas file into the 🔥 zone
 4. Once a month (after your bill arrives), download the billing CSV and drop it into the 🧾 zones
 
+Or, skip steps 2–3 by dropping the same files into
+`config/green_button_energy_watch/electric/` and `.../gas/` instead — they'll
+be imported automatically within a minute, whether or not HA's UI is open.
+
 Duplicate rows from overlapping date ranges are automatically skipped for
-both usage and billing imports.
+both usage and billing imports, regardless of which import method you use.
 
 ---
 
@@ -269,8 +323,17 @@ both usage and billing imports.
 | Column | Description |
 |--------|-------------|
 | `Start Time` | Interval start timestamp (timezone-aware ISO format) |
-| `Usage` | Energy or gas usage for the interval |
+| `Usage` or `Net` | Energy or gas usage for the interval. Avangrid's legacy export layout uses `Usage`; a newer net-metering layout (e.g. for solar accounts) uses `Net` instead. Both are accepted automatically — `Usage` takes precedence if a file somehow contains both. |
 | `Type` | `electric` or `gas` |
+
+> **Net-metering accounts (e.g. solar):** As of August 2026, some Avangrid
+> exports use `Net`, `Delivered`, and `Received` columns in place of `Usage`.
+> The integration reads `Net` as the usage value, since it already equals
+> `Delivered − Received` — the same "net consumption" semantics the legacy
+> `Usage` column carried. `Delivered` and `Received` are present in the file
+> but not currently read separately. Hours where `Net` is zero or negative
+> (exported solar exceeded consumption that hour) are skipped, the same as a
+> zero/negative `Usage` row.
 
 ### Monthly Billing CSV
 
@@ -284,7 +347,7 @@ both usage and billing imports.
 
 Both the hourly usage and monthly billing exports from Avangrid share the same
 column layout — the integration determines how to parse the file based on which
-drop zone you use.
+drop zone (or watch sub-folder) you use.
 
 ### XML (Green Button ESPI) — usage only
 
@@ -326,7 +389,27 @@ Energy Import Panel            WebSocket Handlers
                                  │  → recorder DB (USD)
                                  │
                           persistent notification
+
+
+Filesystem                     watcher.py (FolderWatcher)
+───────────                    ───────────────────────────
+config/green_button_energy_watch/
+  electric/  gas/
+  electric_billing/  gas_billing/
+  │
+  │  polled every 60s
+  │  (+ once at HA startup)
+  └──────────────────────────────►│  sensor.async_process_file() /
+                                    │  cost_sensor.async_process_billing_file()
+                                    │  → same parser.py / billing_parser.py path
+                                    │  → same recorder DB writes as above
+                                    │  → file moved to processed/ or errored/
 ```
+
+Both import paths — panel and watch folder — converge on the same
+`GreenButtonSensor` / `GreenButtonCostSensor` methods, so parsing,
+deduplication, live-data clipping, and statistics writes behave identically
+no matter which one you use.
 
 ### Why `async_import_statistics`?
 
@@ -351,6 +434,8 @@ Each successful import stores the timestamp of the most recently **written**
 stat in HA's `.storage` directory (`green_button_energy_data`). On subsequent
 imports, any row at or before this timestamp is skipped. Usage and billing
 imports maintain separate cursors so they don't interfere with each other.
+This cursor is shared between the sidebar panel and the watch folder, so
+switching between the two import methods never causes duplicate or missing data.
 
 ### Live Data Protection
 
@@ -362,9 +447,11 @@ the current end of the database chain.
 
 ### File Size Limit
 
-Files larger than **10 MB** are rejected before any processing occurs. Green
-Button exports for a full year of hourly data are typically well under 2 MB.
-Monthly billing CSVs are typically a few KB.
+Files larger than **10 MB** are rejected before any processing occurs when
+importing through the sidebar panel. Green Button exports for a full year of
+hourly data are typically well under 2 MB. Monthly billing CSVs are typically
+a few KB. The watch folder does not enforce this limit, since files are read
+directly from disk rather than transmitted over the WebSocket connection.
 
 ---
 
@@ -394,15 +481,46 @@ If you need to wipe all data and start over:
 4. **Restart HA**
 5. **Re-import your files** — oldest date range first, then newer
 
+> **Note:** The watch folder (`green_button_energy_watch/`) is independent of
+> `.storage` and does not need to be touched during a reset. Files already
+> moved to `processed/` or `errored/` will **not** be re-imported after a
+> reset unless you manually move them back into an active drop folder
+> (`electric/`, `gas/`, `electric_billing/`, or `gas_billing/`).
+
 ---
 
 ## Troubleshooting
+
+### "missing 'Usage' or 'Net' column" error
+
+Your file doesn't contain either column the parser accepts for usage values.
+Confirm you downloaded a genuine Avangrid Green Button **usage** export (CSV
+or XML) from your utility's website — not a billing statement, PDF, or
+summary report exported as CSV — and that the header row wasn't stripped or
+edited. If your utility has changed its export format again since this was
+written, please open an issue with the file's header row (with all personal
+data removed) so support for the new layout can be added.
 
 ### "No new data found" notification
 
 The integration's stored `last_time` is already at or past the end of your
 file. Download a more recent date range from your utility website, or delete
 `.storage/green_button_energy_data` and restart to reset the import cursor.
+
+### Files aren't being imported from the watch folder
+
+- Confirm the file was dropped into the correct sub-folder (`electric`,
+  `gas`, `electric_billing`, or `gas_billing`) and has a supported extension
+  (`.csv`/`.xml` for usage folders, `.csv` only for billing folders). Files
+  with any other extension are left in place and ignored.
+- The watcher polls every 60 seconds — give it at least that long, or restart
+  HA to trigger an immediate scan.
+- Check the `errored/` sub-folder — files that fail to parse are moved there
+  (not deleted). Check **Settings → System → Logs**, filtered for
+  `green_button_energy`, for the specific parse error, which will match what
+  a panel import of the same file would have reported.
+- The watcher only starts once the config entry finishes loading. If you just
+  installed or updated the integration, restart Home Assistant.
 
 ### Negative consumption values in Energy Dashboard
 
@@ -413,7 +531,8 @@ cannot occur with files imported fresh after a reset.
 ### Billing import shows wrong cost sensor in Energy Dashboard
 
 Make sure you imported the billing CSV into the correct zone (🧾 Electric Billing
-vs 🧾 Gas Billing) and that you selected the matching sensor in Settings → Energy.
+vs 🧾 Gas Billing) or watch sub-folder (`electric_billing/` vs `gas_billing/`)
+and that you selected the matching sensor in Settings → Energy.
 `Avangrid Electric Cost` is for the electricity grid section; `Avangrid Gas Cost`
 is for the gas consumption section.
 
@@ -433,7 +552,9 @@ section and ignore the electric sensor appearing there.
 
 Check **Settings → System → Logs** and filter for `green_button_energy`.
 Common causes: integration not fully loaded, file is not valid UTF-8, or HA
-WebSocket connection dropped — refresh the browser and try again.
+WebSocket connection dropped — refresh the browser and try again. This only
+applies to the sidebar panel; the watch folder does not use a WebSocket
+connection.
 
 ### Sidebar panel doesn't appear after setup
 

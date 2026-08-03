@@ -5,9 +5,22 @@ CSV format (Avangrid Opower export)
 Columns: Name, Address, Account Number, Service, Type, Date,
          Start Time, End Time, Usage, Units, Costs, Weather
 
+As of August 2026, Avangrid began issuing a second CSV layout for net-metered
+accounts (e.g. customers with solar) with these columns instead:
+
+         Name, Address, Account Number, Service, Type, Date,
+         Start Time, End Time, Net, Units, Costs, Weather, Delivered, Received
+
 - Timestamp : ``Start Time`` column, timezone-aware ISO format,
               e.g. ``"2026-03-01 00:00:00-05:00"``
-- Usage     : ``Usage`` column, float in kWh (electric) or therms (gas)
+- Usage     : ``Usage`` column (legacy layout) OR ``Net`` column (net-metering
+              layout) — float in kWh (electric) or therms (gas). ``Net`` is
+              preferred as the usage value because it already accounts for any
+              exported/received energy (``Net = Delivered - Received``),
+              matching the same "net consumption" semantics the legacy
+              ``Usage`` column carried for non-solar accounts. ``Delivered``
+              and ``Received`` are present in the newer export but not
+              currently read by this parser.
 - Type      : ``Type`` column (``"electric"`` or ``"gas"``) — used to filter
               rows so a single file containing both commodity types is handled
               correctly.
@@ -22,7 +35,8 @@ XML format (ESPI / Green Button standard)
 Both parsers
 -------------
 - Skip rows/readings already imported (timestamp ≤ ``last_time``).
-- Skip rows with negative or zero usage (utility correction rows).
+- Skip rows with negative or zero usage (utility correction rows, or — in the
+  net-metering CSV layout — hours where exported solar exceeded consumption).
 - Run in an executor thread pool — no event-loop blocking.
 - Return a :class:`ParseResult` dataclass with full diagnostics.
 """
@@ -48,6 +62,11 @@ _ESPI_NS = "http://naesb.org/espi"
 # backward compatibility with any external callers that used _STORAGE_FMT.
 STORAGE_TIME_FMT = "%Y-%m-%d %H:%M:%S+00:00"
 _STORAGE_FMT = STORAGE_TIME_FMT  # backward-compat alias
+
+# Column names accepted for the per-interval usage value, in priority order.
+# "usage" is the legacy Avangrid Opower export; "net" is the net-metering
+# layout introduced for solar accounts (Net = Delivered - Received).
+_USAGE_COLUMN_CANDIDATES: tuple[str, ...] = ("usage", "net")
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +220,9 @@ def parse_file(file_path: str, service_type: str, last_time: str) -> ParseResult
 def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
     """Parse an Avangrid Opower CSV export.
 
+    Accepts either the legacy ``Usage`` column or the newer net-metering
+    ``Net`` column (see module docstring) as the per-interval usage value.
+
     Args:
         path: Path to the ``.csv`` file.
         service_type: ``"electric"`` or ``"gas"``.
@@ -238,7 +260,13 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
         return headers_lower.get(name.lower())
 
     time_col = _col("start time")
-    usage_col = _col("usage")
+    # Try each accepted usage-column name in priority order — "Usage" for the
+    # legacy export layout, "Net" for the net-metering layout.
+    usage_col: str | None = None
+    for candidate in _USAGE_COLUMN_CANDIDATES:
+        usage_col = _col(candidate)
+        if usage_col:
+            break
     type_col = _col("type")
 
     if not time_col:
@@ -248,8 +276,9 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
         )
         return result
     if not usage_col:
+        expected = " or ".join(f"'{c.title()}'" for c in _USAGE_COLUMN_CANDIDATES)
         result.errors.append(
-            f"'{path.name}': missing 'Usage' column. "
+            f"'{path.name}': missing {expected} column. "
             f"Found headers: {list(reader.fieldnames)}",
         )
         return result
@@ -295,8 +324,10 @@ def _parse_csv(path: Path, service_type: str, last_time: str) -> ParseResult:
             result.rows_skipped += 1
             continue
 
-        # Skip negative or zero usage — these are utility correction rows that
-        # would corrupt the cumulative sum if accepted.
+        # Skip negative or zero usage — these are utility correction rows (or,
+        # for the net-metering "Net" column, hours where exported solar
+        # exceeded consumption) that would corrupt the cumulative sum if
+        # accepted.
         if usage <= 0:
             _LOGGER.debug(
                 "[%s] Skipping non-positive usage %.4f at %s",

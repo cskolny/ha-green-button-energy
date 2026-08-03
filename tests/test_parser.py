@@ -336,7 +336,126 @@ class TestCsvParser:
         assert not result.success
         assert result.errors
 
+class TestCsvParserNetMeteringColumn:
+    """Tests for the 'Net' column fallback added for Avangrid's net-metering
+    CSV layout (Usage -> Net, plus new Delivered/Received columns)."""
 
+    _NET_METERING_HEADER = (
+        "Name,Address,Account Number,Service,Type,Date,"
+        "Start Time,End Time,Net,Units,Costs,Weather,Delivered,Received\n"
+    )
+
+    def _net_row(
+        self,
+        start: str,
+        net: str,
+        delivered: str = "",
+        received: str = "0.0",
+        stype: str = "electric",
+    ) -> str:
+        end = start  # exact End Time value is irrelevant to the parser
+        delivered = delivered or net
+        return (
+            f"U,A,1,5001415435,{stype},2026-07-02,{start},{end},"
+            f"{net},kWh,,74,{delivered},{received}\n"
+        )
+
+    def test_net_column_used_when_usage_column_absent(self, tmp_path: Path) -> None:
+        csv_content = self._NET_METERING_HEADER + self._net_row(
+            "2026-07-02 00:00:00-04:00", "1.196"
+        )
+        f = tmp_path / "net_metering.csv"
+        f.write_text(csv_content)
+
+        result = parse_file(str(f), "electric", "")
+        assert result.success
+        assert result.rows_imported == 1
+        assert abs(result.new_usage - 1.196) < 1e-6
+
+    def test_multiple_net_rows_summed_correctly(self, tmp_path: Path) -> None:
+        csv_content = self._NET_METERING_HEADER + "".join(
+            [
+                self._net_row("2026-07-02 00:00:00-04:00", "1.196"),
+                self._net_row("2026-07-02 01:00:00-04:00", "1.458"),
+                self._net_row("2026-07-02 02:00:00-04:00", "1.454"),
+            ]
+        )
+        f = tmp_path / "net_metering.csv"
+        f.write_text(csv_content)
+
+        result = parse_file(str(f), "electric", "")
+        assert result.rows_imported == 3
+        assert abs(result.new_usage - (1.196 + 1.458 + 1.454)) < 1e-6
+
+    def test_zero_net_row_skipped(self, tmp_path: Path) -> None:
+        """A fully-exported hour (Net <= 0, e.g. solar export > consumption)
+        must be skipped, same as a legacy zero/negative Usage row."""
+        csv_content = self._NET_METERING_HEADER + "".join(
+            [
+                self._net_row("2026-07-02 00:00:00-04:00", "0.000"),
+                self._net_row("2026-07-02 01:00:00-04:00", "-0.250"),
+                self._net_row("2026-07-02 02:00:00-04:00", "0.800"),
+            ]
+        )
+        f = tmp_path / "net_metering.csv"
+        f.write_text(csv_content)
+
+        result = parse_file(str(f), "electric", "")
+        assert result.rows_imported == 1
+        assert result.rows_skipped == 2
+        assert abs(result.new_usage - 0.800) < 1e-6
+
+    def test_gas_net_metering_layout(self, tmp_path: Path) -> None:
+        csv_content = self._NET_METERING_HEADER + self._net_row(
+            "2026-07-02 00:00:00-04:00", "0.045", stype="gas"
+        )
+        f = tmp_path / "gas_net.csv"
+        f.write_text(csv_content)
+
+        result = parse_file(str(f), "gas", "")
+        assert result.success
+        assert result.rows_imported == 1
+        assert abs(result.new_usage - 0.045) < 1e-6
+
+    def test_usage_column_preferred_over_net_when_both_present(
+        self, tmp_path: Path
+    ) -> None:
+        """If a file somehow has both columns, legacy 'Usage' wins."""
+        csv_content = (
+            "Name,Address,Account Number,Service,Type,Date,"
+            "Start Time,End Time,Usage,Net,Units,Costs,Weather\n"
+            "U,A,1,E,electric,2026-01-01,2026-01-01 00:00:00-05:00,"
+            "2026-01-01 01:00:00-05:00,2.5,9.9,kWh,$0.30,45\n"
+        )
+        f = tmp_path / "both_columns.csv"
+        f.write_text(csv_content)
+
+        result = parse_file(str(f), "electric", "")
+        assert result.rows_imported == 1
+        assert abs(result.new_usage - 2.5) < 1e-6
+
+    def test_missing_usage_and_net_returns_combined_error(self, tmp_path: Path) -> None:
+        f = tmp_path / "bad.csv"
+        f.write_text("Name,Start Time,Type\nFoo,2026-01-01 00:00:00-05:00,electric\n")
+
+        result = parse_file(str(f), "electric", "")
+        assert not result.success
+        assert any("Usage" in e and "Net" in e for e in result.errors)
+
+    def test_reimport_dedup_works_with_net_column(self, tmp_path: Path) -> None:
+        csv_content = self._NET_METERING_HEADER + self._net_row(
+            "2026-07-02 00:00:00-04:00", "1.196"
+        )
+        f = tmp_path / "net_metering.csv"
+        f.write_text(csv_content)
+
+        first = parse_file(str(f), "electric", "")
+        assert first.rows_imported == 1
+
+        second = parse_file(str(f), "electric", first.newest_time)
+        assert second.rows_imported == 0
+        assert second.rows_skipped == 1
+        
 # ---------------------------------------------------------------------------
 # XML parser
 # ---------------------------------------------------------------------------

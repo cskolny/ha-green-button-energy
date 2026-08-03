@@ -49,3 +49,13 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".csv", ".xml"})
 # ── Persistent notification IDs ────────────────────────────────────────────
 NOTIF_SUCCESS = f"{DOMAIN}_import_success"
 NOTIF_ERROR = f"{DOMAIN}_import_error"
+
+# ── Folder watcher (automatic import) ──────────────────────────────────────
+# Drop folder lives at <config>/green_button_energy_watch/ — see watcher.py
+# for the full sub-folder layout and processing behavior.
+WATCH_DIR_NAME = f"{DOMAIN}_watch"
+WATCH_PROCESSED_SUBDIR = "processed"
+WATCH_ERRORED_SUBDIR = "errored"
+# How often (in seconds) the watcher polls for new files. Utility data updates
+# with a ~48-hour delay, so this is deliberately generous rather than tight.
+WATCH_SCAN_INTERVAL_SECONDS = 60

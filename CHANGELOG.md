@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-02
+
+### Added
+- **Automatic folder import (watch folder)** — files can now be imported
+  without ever opening the sidebar panel. A new `watcher.py` module polls a
+  set of drop folders under `<config>/green_button_energy_watch/` every 60
+  seconds and imports any files found automatically:
+
+  ```
+  green_button_energy_watch/
+  ├── electric/            drop hourly electric CSV/XML here
+  ├── gas/                 drop hourly gas CSV/XML here
+  ├── electric_billing/    drop monthly electric billing CSV here
+  ├── gas_billing/         drop monthly gas billing CSV here
+  ├── processed/           successfully imported files land here
+  └── errored/             files that failed to parse land here
+  ```
+
+  Useful for scripted/scheduled downloads, syncing from another machine via
+  `rsync` or Syncthing, or any workflow where opening the Energy Import panel
+  isn't convenient.
+
+- **`watcher.py`** — new module containing `FolderWatcher`, which polls the
+  drop folders via `async_track_time_interval` and delegates directly to the
+  existing `GreenButtonSensor.async_process_file` /
+  `GreenButtonCostSensor.async_process_billing_file` methods, so watched
+  imports get identical deduplication, live-data clipping, statistics
+  writes, and persistent notifications as panel-driven imports.
+
+- **Six new constants** in `const.py`: `WATCH_DIR_NAME`,
+  `WATCH_PROCESSED_SUBDIR`, `WATCH_ERRORED_SUBDIR`,
+  `WATCH_SCAN_INTERVAL_SECONDS`.
+
+- **`tests/test_watcher.py`** — unit and integration-style tests covering
+  folder creation, extension filtering, file moves, successful/failed/
+  exception-raising imports, multi-folder scans, the reentrancy guard, and
+  watcher start/stop lifecycle.
+
+- **`tests/test_parser.py`** — new `TestCsvParserNetMeteringColumn` test
+  class covering the `Net` column fallback below, including zero/negative
+  `Net` rows, the gas net-metering layout, `Usage`-column precedence when
+  both columns are present, the combined missing-column error message, and
+  dedup on re-import.
+
+### Fixed
+- **CSV import failed with `"missing 'Usage' column"` for net-metering
+  exports** — Avangrid began issuing a new CSV layout (observed August 2026)
+  for net-metered accounts (e.g. solar) that renames the `Usage` column to
+  `Net` and adds `Delivered`/`Received` columns. `_parse_csv()` now accepts
+  either `Usage` (legacy layout) or `Net` (net-metering layout) as the usage
+  column, trying `Usage` first for backward compatibility with existing
+  exports.
+
+  `Delivered` and `Received` are present in the newer export but not
+  currently read by the parser — `Net` already accounts for any exported
+  energy (`Net = Delivered − Received`), matching the same "net consumption"
+  semantics the legacy `Usage` column carried for non-solar accounts. Hours
+  where `Net` is zero or negative (exported solar exceeded consumption) are
+  skipped, the same as a zero/negative `Usage` row.
+
+  Affects both hourly electric and gas CSV exports. No `.storage` reset or
+  migration is needed — this only changes which column feeds the existing
+  `Usage` parsing path; deduplication and timestamp behavior are unchanged.
+
+### Changed
+- `async_setup_entry` now starts a `FolderWatcher` immediately after the
+  sensor platform finishes loading (an initial scan runs right away, in
+  addition to the 60-second poll, so files dropped while HA was offline are
+  picked up on startup). `async_unload_entry` stops the watcher before
+  tearing down the config entry.
+- README updated with an "Automatic Folder Import (Watch Folder)" section,
+  updated architecture diagram, updated file structure, `Usage`/`Net` column
+  documentation, and new troubleshooting entries.
+
+### Notes
+- No new dependency was introduced for the folder watcher — it uses HA's
+  built-in polling helper (`async_track_time_interval`) rather than
+  `watchdog`/inotify, so it works identically on every filesystem HA might
+  see the config directory through, including network shares, with
+  `manifest.json`'s `"requirements": []` unchanged.
+- The watch folder shares the same per-commodity deduplication cursor as the
+  sidebar panel (`.storage/green_button_energy_data`), so the two import
+  methods can be freely mixed without risk of duplicate or missing data.
+
 ## [1.7.0] - 2026-03-28
 
 ### Added
