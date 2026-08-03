@@ -323,8 +323,17 @@ both usage and billing imports, regardless of which import method you use.
 | Column | Description |
 |--------|-------------|
 | `Start Time` | Interval start timestamp (timezone-aware ISO format) |
-| `Usage` | Energy or gas usage for the interval |
+| `Usage` or `Net` | Energy or gas usage for the interval. Avangrid's legacy export layout uses `Usage`; a newer net-metering layout (e.g. for solar accounts) uses `Net` instead. Both are accepted automatically — `Usage` takes precedence if a file somehow contains both. |
 | `Type` | `electric` or `gas` |
+
+> **Net-metering accounts (e.g. solar):** As of August 2026, some Avangrid
+> exports use `Net`, `Delivered`, and `Received` columns in place of `Usage`.
+> The integration reads `Net` as the usage value, since it already equals
+> `Delivered − Received` — the same "net consumption" semantics the legacy
+> `Usage` column carried. `Delivered` and `Received` are present in the file
+> but not currently read separately. Hours where `Net` is zero or negative
+> (exported solar exceeded consumption that hour) are skipped, the same as a
+> zero/negative `Usage` row.
 
 ### Monthly Billing CSV
 
@@ -481,6 +490,16 @@ If you need to wipe all data and start over:
 ---
 
 ## Troubleshooting
+
+### "missing 'Usage' or 'Net' column" error
+
+Your file doesn't contain either column the parser accepts for usage values.
+Confirm you downloaded a genuine Avangrid Green Button **usage** export (CSV
+or XML) from your utility's website — not a billing statement, PDF, or
+summary report exported as CSV — and that the header row wasn't stripped or
+edited. If your utility has changed its export format again since this was
+written, please open an issue with the file's header row (with all personal
+data removed) so support for the new layout can be added.
 
 ### "No new data found" notification
 
